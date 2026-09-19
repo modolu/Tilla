@@ -339,6 +339,36 @@ At milestone completion:
 4. create one clean milestone commit;
 5. ensure the working tree is clean unless explicitly documented otherwise.
 
+## Git identity
+
+Every commit in this repository must use:
+
+```text
+Author/Committer: modolu <heritage143@gmail.com>
+```
+
+Before creating any commit, verify:
+
+```bash
+git config user.name
+git config user.email
+```
+
+Expected values:
+
+```text
+modolu
+heritage143@gmail.com
+```
+
+If either value differs, do not commit until the repository-local identity is corrected.
+
+Do not commit using Claude, Anthropic, another person's name, or another email address.
+
+Do not add `Co-Authored-By`, `Signed-off-by`, or other authorship trailers unless the user explicitly requests them.
+
+Source-of-truth document commits and milestone commits must obey this identity rule.
+
 ## Completion report
 
 When finishing implementation work, report concisely:
