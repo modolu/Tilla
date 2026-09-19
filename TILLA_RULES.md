@@ -474,11 +474,14 @@ Town demand removes items from shared market inventory and therefore can increas
 
 ### Town center
 
-Default:
+Default (`townCenterSellInterval = 12`):
 
-- every **24 turns**;
-- removes **1 of every non-fertilizer product**;
-- rate is flat through the season.
+- ticks every **12 turns**, on turns where `step % 12 == 0` (including turn 0), i.e. twice per 24-turn day;
+- each tick removes the same quantity of **every non-fertilizer product**;
+- quantity per product per tick scales with the day: **1** on days 0–9, **2** on days 10–19, **4** on days 20–29 (`TOWN_CENTER_DEMAND_SCHEDULE = [(20, 4), (10, 2), (0, 1)]`);
+- fertilizer is never consumed by the town center.
+
+Verified against installed `kaggle-environments==1.30.2` (`kaggriculture.py` `_town_consume`, `kaggriculture.json`, `README.md`, `AGENTS.md`) and by `tests/test_rules_conformance.py`.
 
 ### Shops
 

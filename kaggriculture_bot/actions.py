@@ -26,10 +26,13 @@ def build_pass_action(hand_count: int) -> dict:
     }
 
 
-def fallback_pass_action() -> dict:
-    """Return the minimal PASS action used at the outer safety boundary.
+def fallback_pass_action(hand_count: int = 0) -> dict:
+    """Return the PASS action used at the outer safety boundary.
 
-    Built from literals only so it cannot fail; it assumes no hired hands, which
-    the environment tolerates (missing hand actions are treated as no-ops).
+    Built from literals only so it cannot fail. ``hand_count`` is the number of
+    hands known to be hired when the failure occurred; anything that is not a
+    non-negative ``int`` is treated as zero so the fallback never raises.
     """
-    return {"farmer": [PASS_OP], "hands": [], "market": []}
+    if not isinstance(hand_count, int) or isinstance(hand_count, bool) or hand_count < 0:
+        hand_count = 0
+    return {"farmer": [PASS_OP], "hands": [[PASS_OP] for _ in range(hand_count)], "market": []}

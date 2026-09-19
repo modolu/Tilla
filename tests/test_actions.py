@@ -44,3 +44,15 @@ def test_fallback_pass_action_matches_official_pass_agent_shape():
     action = fallback_pass_action()
     assert action == {"farmer": ["PASS"], "hands": [], "market": []}
     assert fallback_pass_action() is not action
+
+
+@pytest.mark.parametrize("hand_count", [0, 1, 3])
+def test_fallback_pass_action_emits_one_pass_per_known_hand(hand_count):
+    action = fallback_pass_action(hand_count)
+    assert_valid_action_shape(action, expected_hands=hand_count)
+    assert action == build_pass_action(hand_count)
+
+
+@pytest.mark.parametrize("bad_count", [-1, None, "2", 2.0, True])
+def test_fallback_pass_action_never_raises_on_bad_hand_count(bad_count):
+    assert fallback_pass_action(bad_count) == {"farmer": ["PASS"], "hands": [], "market": []}

@@ -80,6 +80,28 @@ def test_agent_returns_valid_pass_for_malformed_observation(bad_obs):
     assert action["farmer"] == ["PASS"]
 
 
+def test_agent_fallback_keeps_one_pass_per_hand_when_downstream_raises(monkeypatch, obs_two_hands):
+    """An unexpected downstream failure must still honour the hands contract."""
+
+    def explode(hand_count):
+        raise RuntimeError("simulated downstream failure")
+
+    monkeypatch.setattr(main, "build_pass_action", explode)
+    action = main.agent(obs_two_hands)
+    assert_valid_action_shape(action, expected_hands=2)
+    assert action == {"farmer": ["PASS"], "hands": [["PASS"], ["PASS"]], "market": []}
+
+
+def test_agent_fallback_is_valid_when_parser_itself_raises(monkeypatch, obs_two_hands):
+    def explode(obs):
+        raise RuntimeError("simulated parser failure")
+
+    monkeypatch.setattr(main, "count_hired_hands", explode)
+    action = main.agent(obs_two_hands)
+    assert_valid_action_shape(action, expected_hands=0)
+    assert action == {"farmer": ["PASS"], "hands": [], "market": []}
+
+
 def test_agent_hand_count_matches_official_environment_after_hire():
     """Hire hands through the real environment and check our hands list tracks them."""
     from kaggle_environments import make

@@ -16,7 +16,9 @@ def agent(obs):
     parser -> features -> opponent -> economy -> strategy -> tasks -> actions ->
     validator flow between observation and returned action.
     """
+    hand_count = 0
     try:
-        return build_pass_action(count_hired_hands(obs))
+        hand_count = count_hired_hands(obs)
+        return build_pass_action(hand_count)
     except Exception:  # competition survival boundary, not normal control flow
-        return fallback_pass_action()
+        return fallback_pass_action(hand_count)
