@@ -121,6 +121,7 @@ flowchart TD
     P --> X
     O <--> X
     G <--> X
+    T <--> X
 
     subgraph Offline only
       H[harness.py]
@@ -195,7 +196,11 @@ EpisodeMemory
 - inferred_opponent_pipeline: dict[str, float]
 - current_plan: StrategicPlan | None
 - plan_created_step: int | None
+- unit_assignments: dict[int, Job]   # unit index -> job it is walking to / working on
+- assignment_day: int | None         # day the assignments belong to; cleared at the day boundary
 ```
+
+`Job` is the task planner's unit of work: `(kind, target, priority, item, quantity, deadline_hour, requires, unit)` with a stable `key` `(kind, x, y, item, unit)` so the same job is recognised across turns. `unit_assignments` is the only strategic memory the task layer reads and writes (movement-to-task persistence); hands vanish and the farmer respawns at the day refresh, so nothing in it survives a day boundary.
 
 ### Constraints
 

@@ -120,10 +120,12 @@ def make_state(
     money=None,
     hands=None,
     prices=None,
+    hand_inventories=None,
 ):
     """Copy a real observation, apply overrides to our own farm, and parse it.
 
     ``tiles`` maps ``(x, y)`` to a raw tile value (``None``, ``"LOCKED"`` or a dict).
+    ``hand_inventories`` maps a hand's position in ``hands`` (0-based) to its inventory.
     """
     from kaggriculture_bot.parser import parse_observation
 
@@ -148,6 +150,8 @@ def make_state(
         obs["private"]["shed"].update(shed)
     if inventory is not None:
         obs["private"]["inventories"][0] = dict(inventory)
+    for hand_idx, items in (hand_inventories or {}).items():
+        obs["private"]["inventories"][hand_idx + 1] = dict(items)
     if money is not None:
         me["money"] = money
     if prices is not None:

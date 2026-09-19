@@ -111,7 +111,7 @@ def test_agent_returns_legal_action_for_every_official_fixture(name):
     expected_hands = len(obs["farms"][obs["player"]]["hands"])
     action = main.agent(obs)
     assert_valid_action_shape(action, expected_hands=expected_hands)
-    assert action["hands"] == [["PASS"]] * expected_hands
+    assert len(action["hands"]) == expected_hands
     assert validate_or_fallback(action, expected_hands) == action
 
 

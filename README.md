@@ -45,15 +45,31 @@ from agents.baseline import agent as baseline_agent
 env.run([main.agent, baseline_agent])
 ```
 
-## Explain economic decisions
+## Explain decisions
 
 ```bash
 python -m tools.replay_analysis --opponent pass --seed 2026 --steps 0 264 480
 ```
 
-Prints the ranked opportunities (revenue, costs, labor, land, net value,
-score), the cash reserve, shed pressure and the selected objective for the
-requested turns of one official episode.
+Prints, for the requested turns of one official episode, the ranked
+opportunities (revenue, costs, labor, land, net value, score), the cash
+reserve and shed pressure, every objective the strategy listed, the hiring
+decision with its reasoning, the generated jobs and the unit assignments
+(including which were carried over from the previous turn).
+
+## Instrumented matches and the hiring ablation
+
+```bash
+python -m tools.harness --candidate main --opponent control --seeds 4000 4039
+python -m tools.harness --candidate main --opponent baseline --seeds 4000 4039
+```
+
+Plays seat-swapped paired official episodes and reports wins, terminal-cash
+margins, hires per day, hand-action utilization, care losses (crops lost to
+missed watering, fresh plantings left unwatered, animals escaped), malformed
+outputs and per-turn timing. `control` is the same `main.agent` with only its
+`HIRE` market orders removed (`tools.harness.hiring_disabled`), the Milestone 4
+ablation control.
 
 ## Regenerate observation fixtures
 

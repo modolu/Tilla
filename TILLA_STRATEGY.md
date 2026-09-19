@@ -205,6 +205,8 @@ Until calibrated, never intentionally reduce bank below:
 
 Exceptions are allowed only for an immediately realized positive-cash action in the same turn.
 
+The reserve gates discretionary spending. Mandatory care of existing assets is what it is kept for, so survival feed purchases (§5) and the hands the care backlog still needs (§12) are paid from it, never below zero.
+
 Affordability is not profitability.
 
 ---
@@ -255,7 +257,7 @@ Mechanics-derived inputs are not listed here: crop/animal tables, land prices, s
 |---|---:|---|---|
 | `LABOR_COST_PER_ACTION` (idle floor) | 3.0 coins | Minimum charge per unit action (incl. travel steps) | Actions are never free even when the farmer is idle |
 | Labor-price scaling (`economy.labor_price`) | linear in utilization | Marginal action value rises from the floor to the best feasible crop's gross value per action as committed daily actions approach the budget | A saturated farmer must price actions at what they could earn; keeps labor-heavy options from crowding out better per-action uses |
-| `FARMER_DAILY_ACTION_BUDGET` | 20.0 actions/day | Amortized daily care the single farmer will commit to; an opportunity whose amortized daily actions exceed the remaining budget gets realization 0 | 24 turns/day minus slack for shed trips and the daily feed purchase turn |
+| `FARMER_DAILY_ACTION_BUDGET` | 20.0 actions/day | Amortized daily care the farmer alone commits to; since Milestone 4 the planning budget is this plus `PLANNED_DAILY_HANDS × HAND_DAILY_ACTIONS` (§12) and an opportunity whose amortized daily actions exceed the remaining budget gets realization 0 | 24 turns/day minus slack for shed trips and the daily feed purchase turn |
 | `PLANT_DAILY_ACTIONS` / `ANIMAL_DAILY_ACTIONS` | 2.0 / 3.0 | Daily actions charged for each existing plant / animal when computing utilization | Water+move; feed+collect+amortized harvest with batched travel |
 | `LAND_SCARCITY_FREE_TILES` | 8 tiles | Land cost is zero while at least this many empty unlocked tiles remain, then rises linearly to full at zero | Tiles are only scarce when the field is nearly full; no land purchases are made in v1 |
 | `LAND_TILE_DAY_VALUE` | 18.0 coins/tile-day | Land opportunity cost per occupied tile-day at full scarcity | Roughly one wheat cycle's net value per tile-day |
@@ -271,7 +273,7 @@ Mechanics-derived inputs are not listed here: crop/animal tables, land prices, s
 | Animal harvest threshold | `yield_units >= max_held - 1`, or any product from day 28 | When a trip to harvest animal product is worth taking | The next production would hit the tile cap and be lost; collect everything before the end |
 | One-time crop harvest | at the yield cap, at `max_yield_day` once watered, or immediately when decaying | When a crop is harvested | No further watering adds yield after the cap |
 | `RESERVE_EMERGENCY_BUFFER` | 50 coins | Emergency market buffer term of the dynamic reserve | Small cushion for unplanned feed/seed purchases |
-| `RESERVE_HAND_BUDGET` | 0 coins | Cheap-hand budget term of the dynamic reserve | Placeholder until hiring is part of policy (Milestone 4) |
+| Cheap-hand budget (`economy.expected_hand_spend`) | Fibonacci cost of the hands current care relies on | Cheap-hand budget term of the dynamic reserve (0 on the final day) | Tomorrow's care must be affordable before discretionary spending (§12) |
 | Execution cutoff | `score > 0` and realization `> 0` and `money - setup_cash >= reserve` | Which ranked opportunity may be executed | Only positive, realizable, reserve-respecting investments |
 | Planting slots per turn | `remaining labor capacity // amortized daily actions` (≥ 1), capped by empty tiles and affordable seed | How many seeds are bought / tiles targeted at once | Do not stockpile beyond what labor can service |
 
@@ -470,6 +472,27 @@ Initial heuristic:
 - stop hiring when marginal hand value falls below next Fibonacci cost.
 
 Task planner, not strategy, assigns specific work after the hire count is chosen.
+
+### Initial Milestone 4 hiring and multi-unit parameters
+
+The hiring policy (`strategy.hiring_decision` → `economy.hiring_plan`) instantiates the heuristic above with the parameters below. They are **initial, benchmark-tunable strategy choices, not game rules**; values live once in `constants.py` and change only with benchmark evidence recorded in §21. Hire mechanics (Fibonacci costs, spawn order, the stuck south-east spawn tile, hands vanishing at the day refresh) are in `TILLA_RULES.md` §5.
+
+| Parameter / rule | Value | Controls | Why it exists |
+|---|---:|---|---|
+| Backlog valuation | `uncovered = backlog − units × turns left`; a hand enables `min(turns left − HAND_SETUP_ACTIONS, uncovered)` actions valued at `economy.labor_price` | Marginal value of the next hand | Same-day marginal value of the actions it enables, priced like every other action |
+| `HAND_ACTIONS_PER_JOB` | 2.5 actions | Backlog estimate per job target (survival, daily work, delivery and economic objectives; idle work excluded) | The action itself plus expected travel |
+| `HAND_SETUP_ACTIONS` | 3 turns | Turns a new hand loses to spawning and walking to its first job | Spawn happens after the market phase, usually on a locked access tile one step from work |
+| `MIN_HAND_USEFUL_ACTIONS` | 4 actions | A hand is hired only if it can perform at least this many uncovered actions today | Never hire units that would mostly PASS |
+| `MAX_DAILY_HIRES` | 6 hands/day | Hard cap on hires per day | Bounds spend (1+1+2+3+5+8 = 20 coins) and stuck/idle risk |
+| Stuck spawn | no hire whose predicted spawn tile has no unlocked neighbour | Same-turn hire count while only NW is unlocked | A hand stuck on `(5,5)` all day is pure cost (`TILLA_RULES.md` §5) |
+| Care hands and the reserve | hands still needed for the care backlog (survival + daily work on existing assets) are paid from the reserve, never below zero; every other hand must leave the reserve intact | Whether the reserve blocks a hire | Like survival feed purchases: an avoidable loss is irreversible, and the reserve exists to fund tomorrow's care |
+| `PLANNED_DAILY_HANDS` | 3 hands | Hands the production planner budgets for when sizing what it will have to care for daily (`economy.daily_action_budget = FARMER_DAILY_ACTION_BUDGET + PLANNED_DAILY_HANDS × HAND_DAILY_ACTIONS`) | Production is sized for the workforce that cheap early hires make available |
+| `HAND_DAILY_ACTIONS` | 16.0 actions/day | Amortized daily care one hired hand contributes to that budget | 23 acting turns minus setup and travel |
+| Same-day watering capacity | `(23 − hour) × units − 2 × plants still unwatered` new plantings allowed this turn | How many seeds may be planted / bought now | Every new planting must have a credible same-day watering plan (§5) |
+| Market order layout | sells, survival purchases, economic purchases, then hires; truncated to the official 10-order cap | Which orders survive the cap | Sales fund purchases; a dropped hire is the cheapest loss |
+| `PROMOTION_SLACK_TURNS` | 1 turn | A job that must start within this many turns to finish today is scheduled ahead of routine work when the other units can still cover that work | Otherwise routine care absorbs every unit until far economic work is unreachable and the workforce idles late in the day |
+
+Assignment itself is not a policy parameter: jobs are staffed tier by tier (survival, daily work, delivery, economic, idle), cheapest feasible unit–job pair first including any shed detour for a required item, ties by job order then unit index; a unit keeps its job across turns (movement-to-task persistence) unless a higher tier needs it or the job disappears.
 
 ---
 
@@ -678,7 +701,7 @@ SHED_PRESSURE_START = 85
 SHED_EMERGENCY = 95
 ```
 
-Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters".
+Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters".
 
 Do not scatter these values through strategy code. Define them once in `constants.py` and document changes here with benchmark evidence.
 

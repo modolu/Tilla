@@ -238,6 +238,26 @@ def pass_turn_action(hand_count: int) -> TurnAction:
     )
 
 
+@dataclass(frozen=True)
+class HiringDecision:
+    """Explainable outcome of the same-day hiring estimate (TILLA_STRATEGY.md §12)."""
+
+    existing_units: int
+    hires_today: int
+    remaining_turns: int  # turns a hand hired now could still act today
+    backlog_actions: float  # estimated actions in today's job backlog
+    existing_capacity: float  # actions the current workforce can still perform today
+    uncovered_actions: float
+    action_value: float  # marginal value of one action (economy.labor_price)
+    costs: tuple[int, ...]  # sequential Fibonacci cost of each recommended hire
+    values: tuple[float, ...]  # marginal value of each recommended hire
+    next_cost: int  # cost of the first hire NOT recommended (or the next one)
+    hires: int
+    reason: str = ""
+    care_actions: float = 0.0  # part of the backlog that keeps existing assets alive
+    spawns: tuple[Position, ...] = ()  # predicted spawn tile of each recommended hire
+
+
 # --- Episode memory --------------------------------------------------------------------
 
 
@@ -262,33 +282,90 @@ class ObjectiveKind(StrEnum):
     PASS = "PASS"
 
 
+# Objective priorities (TILLA_STRATEGY.md §3/§16): lower is more urgent.
+PRIORITY_SURVIVAL = 1  # lost tonight (or within turns) without action
+PRIORITY_DAILY_WORK = 2  # mandatory care, harvest/collect, started work
+PRIORITY_DELIVERY = 3  # final-day delivery of carried produce
+PRIORITY_ECONOMIC = 4  # planned production / expansion
+PRIORITY_IDLE = 5  # reposition / idle delivery
+
+
 @dataclass(frozen=True)
 class Objective:
     """A typed objective. ``targets`` are candidate tiles in stable (y, x)
-    order; the task layer chooses the nearest reachable one with pathing."""
+    order; the task layer turns each target into one job and assigns units."""
 
     kind: ObjectiveKind
     targets: tuple[Position, ...] = ()
     item: str | None = None
     quantity: int | None = None
     deadline_hour: int | None = None  # last hour the on-tile action may still be performed
+    priority: int = PRIORITY_ECONOMIC
+
+
+PASS_OBJECTIVE = Objective(ObjectiveKind.PASS, priority=PRIORITY_IDLE)
 
 
 @dataclass(frozen=True)
 class StrategicPlan:
-    """One turn's strategic decision: the unit objective plus market orders.
+    """One turn's strategic decision.
 
-    ``equal_priority`` lists further objectives of the same priority as
-    ``objective`` (all mandatory today, none urgent); the task layer executes
-    whichever has the nearest target so one tour services nearby tiles.
+    ``objective`` and ``equal_priority`` describe the top priority tier (the
+    Milestone 2/3 contract, still used by the frozen baseline). ``objectives``
+    (Milestone 4) lists every objective of every tier in priority order so
+    several units can work at once; when empty it is derived from the top
+    tier. ``hires`` is the number of HIRE orders included in ``market``.
     """
 
-    objective: Objective
+    objective: Objective = PASS_OBJECTIVE
     market: tuple[MarketOrder, ...] = ()
     equal_priority: tuple[Objective, ...] = ()
+    objectives: tuple[Objective, ...] = ()
+    hires: int = 0
+
+    def all_objectives(self) -> tuple[Objective, ...]:
+        """Every objective in priority order (PASS objectives excluded)."""
+        listed = self.objectives or (self.objective, *self.equal_priority)
+        return tuple(o for o in listed if o.kind is not ObjectiveKind.PASS)
 
 
-PASS_OBJECTIVE = Objective(ObjectiveKind.PASS)
+# --- Unit-level jobs (Milestone 4) ------------------------------------------------------------
+
+
+class JobKind(StrEnum):
+    WATER = "WATER"
+    FEED = "FEED"  # requires carried WHEAT
+    HARVEST = "HARVEST"
+    COLLECT = "COLLECT"  # COLLECT_FERTILIZER
+    PLANT = "PLANT"  # item = crop
+    BUILD = "BUILD"  # item = structure kind
+    PLACE = "PLACE"  # item = animal, requires it carried
+    FERTILIZE = "FERTILIZE"  # requires carried FERTILIZER
+    DELIVER = "DELIVER"  # DROP at a shed access tile; bound to one unit
+    MOVE = "MOVE"  # reposition only
+
+
+@dataclass(frozen=True)
+class Job:
+    """One concrete unit-level piece of work on one tile.
+
+    ``key`` is the stable identity used for persistence and conflict
+    avoidance; ``requires`` names a carried item the acting unit must hold
+    (fetched from the shed first when missing); ``unit`` pins a job to one
+    unit (delivery of what that unit carries)."""
+
+    kind: JobKind
+    target: Position
+    priority: int
+    item: str | None = None
+    quantity: int | None = None
+    deadline_hour: int | None = None
+    requires: str | None = None
+    unit: int | None = None
+
+    @property
+    def key(self) -> tuple:
+        return (self.kind.value, self.target.x, self.target.y, self.item, self.unit)
 
 
 # --- Economic value objects (Milestone 3) --------------------------------------------------
@@ -345,3 +422,7 @@ class EpisodeMemory:
     inferred_opponent_pipeline: dict[str, float] = field(default_factory=dict)
     current_plan: StrategicPlan | None = None
     plan_created_step: int | None = None
+    # Movement-to-task persistence: the job each of our units (by current
+    # unit index) was assigned last turn, valid only for ``assignment_day``.
+    unit_assignments: dict[int, Job] = field(default_factory=dict)
+    assignment_day: int | None = None

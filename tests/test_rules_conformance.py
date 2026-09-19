@@ -436,3 +436,94 @@ def test_animal_purchase_first_production_and_max_held_cap():
         eggs_by_day[goose.first_yield_day + goose.max_held] == goose.max_held
     )  # capped, not lost twice
     assert eggs_by_day[goose.first_yield_day + goose.max_held + 1] == goose.max_held
+
+
+# --- Hiring mechanics used by the Milestone 4 planner (TILLA_RULES.md §5) ------------------
+
+
+def test_same_turn_hires_escalate_along_fibonacci_and_reset_next_day():
+    from kaggriculture_bot.economy import hire_cost
+
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["HIRE"]] * 5))
+    assert obs["farms"][0]["hires_today"] == 5 and len(obs["farms"][0]["hands"]) == 5
+    assert obs["farms"][0]["money"] == 3000 - sum(hire_cost(k) for k in range(5))  # 1+1+2+3+5
+    assert [hire_cost(k) for k in range(8)] == [1, 1, 2, 3, 5, 8, 13, 21]
+    obs = _p0(env, _farmer(env, market=[["HIRE"]]))  # sixth hire of the day costs 8
+    assert obs["farms"][0]["money"] == 3000 - 12 - 8 and obs["farms"][0]["hires_today"] == 6
+    while env.state[0].observation["hour"] < 23:
+        _p0(env, PASS_ACTION)
+    obs = _p0(env, PASS_ACTION)  # day refresh
+    assert (
+        obs["day"] == 1 and obs["farms"][0]["hands"] == [] and obs["farms"][0]["hires_today"] == 0
+    )
+    obs = _p0(env, _farmer(env, market=[["HIRE"]]))
+    assert obs["farms"][0]["money"] == 3000 - 20 - 1  # sequence restarted at 1
+
+
+def test_hand_acts_from_the_turn_after_its_hire():
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["BUY_PRODUCT", "WHEAT", 2], ["HIRE"]]))
+    assert obs["farms"][0]["hands"] == [[5, 4]]  # hired in the market phase: no action yet
+    _p0(env, _farmer(env, hands=[["WEST"]]))
+    obs = _p0(env, _farmer(env, hands=[["PICKUP", "WHEAT", 1]]))  # from (4,4) next turn
+    assert obs["private"]["inventories"][1] == {"WHEAT": 1}
+
+
+def test_same_turn_spawn_order_and_the_stuck_south_east_access_tile():
+    """With the farmer on (4,4), four same-turn hires spawn NE, SW, SE, then NW.
+    (5,5) has only locked neighbours while NE and SW are locked: that hand
+    cannot move at all for the rest of the day."""
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["HIRE"]] * 4))
+    assert obs["farms"][0]["hands"] == [[5, 4], [4, 5], [5, 5], [4, 4]]
+    for direction in ("NORTH", "SOUTH", "EAST", "WEST"):
+        obs = _p0(env, _farmer(env, hands=[["PASS"], ["PASS"], [direction], ["PASS"]]))
+        assert obs["farms"][0]["hands"][2] == [5, 5]
+    obs = _p0(env, _farmer(env, hands=[["PASS"], ["NORTH"], ["PASS"], ["PASS"]]))
+    assert obs["farms"][0]["hands"][1] == [4, 4]  # (4,5) -> (4,4) is allowed
+
+
+def test_spawn_prediction_matches_the_environment():
+    from kaggriculture_bot.features import can_act_from, hand_spawn_positions
+    from kaggriculture_bot.models import Position
+    from kaggriculture_bot.parser import parse_observation
+
+    env = _fresh_env()
+    state = parse_observation(env.state[0].observation)
+    predicted = hand_spawn_positions(state.me, 4)
+    obs = _p0(env, _farmer(env, market=[["HIRE"]] * 4))
+    assert [[p.x, p.y] for p in predicted] == obs["farms"][0]["hands"]
+    assert [can_act_from(state.me, p) for p in predicted] == [True, True, False, True]
+    # Farmer away from the shed: the NW tile is free and comes first.
+    _p0(env, _farmer(env, farmer=["WEST"], hands=[["PASS"]] * 4))
+    state = parse_observation(env.state[0].observation)
+    assert hand_spawn_positions(state.me, 1) == (Position(4, 4),)
+    obs = _p0(env, _farmer(env, market=[["HIRE"]], hands=[["PASS"]] * 4))
+    assert obs["farms"][0]["hands"][4] == [4, 4]
+    # Occupancy is taken after the same turn's unit moves (market phase follows unit phase).
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, farmer=["WEST"], market=[["HIRE"]]))
+    assert obs["farms"][0]["farmer"] == [3, 4] and obs["farms"][0]["hands"] == [[4, 4]]
+
+
+def test_hour_23_hire_is_paid_and_vanishes_at_the_refresh():
+    env = _fresh_env()
+    while env.state[0].observation["hour"] < 23:
+        _p0(env, PASS_ACTION)
+    obs = _p0(env, _farmer(env, market=[["HIRE"]]))
+    assert obs["day"] == 1 and obs["farms"][0]["hands"] == []
+    assert obs["farms"][0]["money"] == 3000 - 1
+
+
+def test_hand_inventory_is_dropped_into_the_shed_when_hands_vanish():
+    env = _fresh_env()
+    _p0(env, _farmer(env, market=[["BUY_PRODUCT", "WHEAT", 2], ["HIRE"]]))
+    _p0(env, _farmer(env, hands=[["WEST"]]))
+    obs = _p0(env, _farmer(env, hands=[["PICKUP", "WHEAT", 2]]))
+    assert obs["private"]["shed"]["WHEAT"] == 0 and obs["private"]["inventories"][1] == {"WHEAT": 2}
+    while env.state[0].observation["hour"] < 23:
+        _p0(env, _farmer(env, hands=[["NORTH"]]))
+    obs = _p0(env, _farmer(env, hands=[["PASS"]]))
+    assert obs["day"] == 1 and obs["farms"][0]["hands"] == []
+    assert obs["private"]["shed"]["WHEAT"] == 2 and obs["private"]["inventories"] == [{}]

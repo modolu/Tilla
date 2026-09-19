@@ -9,9 +9,13 @@ from kaggriculture_bot.constants import (
     EARLY_MIN_CASH_RESERVE,
     FARMER_DAILY_ACTION_BUDGET,
     FEED_WHEAT_RESERVE_PER_ANIMAL,
+    HAND_DAILY_ACTIONS,
+    HAND_SETUP_ACTIONS,
     HARVEST_MIN_CASH_RESERVE,
     LABOR_COST_PER_ACTION,
     LAND_SCARCITY_FREE_TILES,
+    MAX_DAILY_HIRES,
+    PLANNED_DAILY_HANDS,
     RESERVE_EMERGENCY_BUFFER,
     SHED_EMERGENCY,
     SHED_PRESSURE_START,
@@ -190,7 +194,15 @@ def test_cow_and_sheep_slower_payoff_is_reflected(obs_no_hands):
 
 
 def test_animal_needs_labor_capacity(obs_no_hands):
-    busy = make_state(obs_no_hands, day=2, hour=0, tiles=field(10))  # 20 committed actions
+    # The planned workforce budget (farmer + planned hands) is 68 actions/day;
+    # 23 fed animals commit 69 of them, so nothing is left for another animal.
+    assert economy.daily_action_budget() == FARMER_DAILY_ACTION_BUDGET + (
+        PLANNED_DAILY_HANDS * HAND_DAILY_ACTIONS
+    )
+    herd = {(x, y): raw_animal(fed_today=True) for x in range(5) for y in range(5)}
+    for pos in ((0, 0), (0, 1)):
+        del herd[pos]
+    busy = make_state(obs_no_hands, day=2, hour=0, tiles=herd)
     assert economy.labor_capacity_remaining(busy) <= 0
     est = animal(busy, "GOOSE")
     assert est.realization_probability == 0.0 and "labor" in est.reason
@@ -253,7 +265,7 @@ def test_labor_price_rises_with_utilization(obs_no_hands):
     busy = make_state(obs_no_hands, day=1, hour=0, tiles=field(8))
     assert economy.labor_price(idle) == LABOR_COST_PER_ACTION
     assert economy.labor_price(busy) > economy.labor_price(idle)
-    assert economy.farmer_utilization(busy) == pytest.approx(16 / FARMER_DAILY_ACTION_BUDGET)
+    assert economy.farmer_utilization(busy) == pytest.approx(16 / economy.daily_action_budget())
 
 
 def test_higher_action_burden_lowers_otherwise_equal_opportunity(obs_no_hands):
@@ -442,3 +454,97 @@ def test_fertilizer_does_not_double_count_days_already_covered(obs_no_hands):
     tomato["fertilized_until_day"] = -1
     state = make_state(obs_no_hands, day=9, hour=0, tiles={(4, 3): tomato})
     assert economy.estimate_fertilize(state, P(4, 3), state.me.tiles[3][4]).expected_units == 3
+
+
+# --- Hiring estimate (Milestone 4, TILLA_STRATEGY.md §12) -----------------------------------------
+
+
+def test_hire_cost_follows_fibonacci_from_hires_already_made_today():
+    assert [economy.hire_cost(k) for k in range(8)] == [1, 1, 2, 3, 5, 8, 13, 21]
+
+
+def test_hiring_plan_escalates_costs_within_one_turn(obs_no_hands):
+    state = make_state(obs_no_hands, day=6, hour=0, money=3000)
+    decision = economy.hiring_plan(state, backlog_actions=200.0, reserve=300)
+    # Farmer on (4,4): spawns NE, SW, then the stuck SE tile (TILLA_RULES.md §5).
+    assert decision.hires == 2 and "stuck" in decision.reason
+    assert decision.costs == (1, 1) and decision.next_cost == 2
+    assert decision.spawns == (Position(5, 4), Position(4, 5))
+    assert all(v > c for v, c in zip(decision.values, decision.costs, strict=True))
+    away = make_state(obs_no_hands, day=6, hour=0, money=3000, farmer=(3, 4))
+    decision = economy.hiring_plan(away, backlog_actions=200.0, reserve=300)
+    assert decision.spawns == (Position(4, 4), Position(5, 4), Position(4, 5))
+    assert decision.hires == 3 and decision.costs == (1, 1, 2) and "stuck" in decision.reason
+
+
+def test_hiring_plan_continues_the_sequence_after_earlier_hires(obs_two_hands):
+    state = make_state(obs_two_hands, day=6, hour=1, money=3000, hands=[(1, 1), (2, 2)])
+    assert state.me.hires_today == 2
+    decision = economy.hiring_plan(state, backlog_actions=200.0, reserve=300)
+    assert decision.costs[:1] == (2,)  # third hire of the day
+
+
+def test_no_hire_without_uncovered_backlog(obs_no_hands):
+    state = make_state(obs_no_hands, day=6, hour=0, money=3000)
+    assert economy.hiring_plan(state, backlog_actions=0.0, reserve=300).hires == 0
+    covered = economy.hiring_plan(state, backlog_actions=20.0, reserve=300)  # farmer has 23 turns
+    assert covered.hires == 0 and covered.uncovered_actions == 0.0
+
+
+def test_no_hire_when_the_day_is_nearly_over(obs_no_hands):
+    for hour in (20, 21, 22, 23):
+        state = make_state(obs_no_hands, day=6, hour=hour, money=3000)
+        assert economy.hiring_plan(state, backlog_actions=200.0, reserve=300).hires == 0
+
+
+def test_reserve_blocks_speculative_hiring_but_not_care_hiring(obs_no_hands):
+    state = make_state(obs_no_hands, day=6, hour=0, money=300)
+    blocked = economy.hiring_plan(state, backlog_actions=200.0, reserve=300)
+    assert blocked.hires == 0 and blocked.reason == "cash reserve"
+    care = economy.hiring_plan(state, backlog_actions=200.0, reserve=300, care_actions=60.0)
+    assert care.hires >= 1
+    assert 300 - sum(care.costs) >= 0
+    # Care hands stop once the care backlog is covered; the rest needs the reserve.
+    partial = economy.hiring_plan(state, backlog_actions=200.0, reserve=300, care_actions=40.0)
+    assert partial.hires == 1 and partial.reason == "cash reserve"
+
+
+def test_hire_value_falls_with_the_hand_s_setup_burden(obs_no_hands):
+    early = make_state(obs_no_hands, day=6, hour=0, money=3000)
+    late = make_state(obs_no_hands, day=6, hour=12, money=3000)
+    a = economy.hiring_plan(early, backlog_actions=200.0, reserve=300)
+    b = economy.hiring_plan(late, backlog_actions=200.0, reserve=300)
+    assert a.values[0] > b.values[0]
+    assert a.remaining_turns - HAND_SETUP_ACTIONS == a.values[0] / a.action_value
+
+
+def test_hiring_stops_when_the_backlog_is_covered(obs_no_hands):
+    state = make_state(obs_no_hands, day=6, hour=0, money=3000)
+    decision = economy.hiring_plan(state, backlog_actions=23.0 + 25.0, reserve=300)
+    assert decision.hires == 2  # 20 usable actions each; 5 left is worth a hand, 0 is not
+    assert decision.reason.startswith("no realizable backlog")
+
+
+def test_hiring_plan_respects_the_daily_cap(obs_no_hands):
+    state = make_state(obs_no_hands, day=6, hour=0, money=9000, farmer=(2, 2))
+    decision = economy.hiring_plan(state, backlog_actions=1000.0, reserve=300)
+    assert decision.hires <= MAX_DAILY_HIRES
+
+
+def test_order_cost_prices_purchases_and_nothing_else(obs_no_hands):
+    from kaggriculture_bot.models import MarketOp, MarketOrder
+
+    state = make_state(obs_no_hands, day=0, hour=0)
+    assert (
+        economy.order_cost(state, MarketOrder(MarketOp.BUY_SEED, "WHEAT", 3))
+        == 3 * CROPS["WHEAT"].seed
+    )
+    assert (
+        economy.order_cost(state, MarketOrder(MarketOp.BUY_ANIMAL, "GOOSE", 1))
+        == ANIMALS["GOOSE"].cost
+    )
+    assert economy.order_cost(
+        state, MarketOrder(MarketOp.BUY_PRODUCT, "WHEAT", 2)
+    ) == 2 * economy.buy_price(state, "WHEAT")
+    assert economy.order_cost(state, MarketOrder(MarketOp.SELL, "WHEAT", 2)) == 0
+    assert economy.order_cost(state, MarketOrder(MarketOp.HIRE)) == 0

@@ -168,6 +168,11 @@ multiplied by `farmHandCostMult` (default 1).
 - Hands must be rehired next day.
 - New hands spawn on the least-occupied shed access tile in NW→NE→SW→SE order.
 - Spawn can occur on a locked access tile; the hand may move off it but cannot move back onto locked land (§3).
+- `HIRE` is processed in the market phase, after the turn's unit actions (§20): a hand hired at hour `h` first acts at hour `h+1`, and spawn occupancy counts unit positions after that turn's moves.
+- Several `HIRE` orders in one turn are processed sequentially: each costs the next Fibonacci value and each spawn counts the hands spawned just before it. With the farmer on `(4,4)`, four same-turn hires spawn on `(5,4)`, `(4,5)`, `(5,5)`, `(4,4)`.
+- A hand spawned on a locked access tile can only step onto an unlocked neighbour. While NE and SW are both locked, `(5,5)` has no unlocked neighbour, so a hand spawned there cannot move for the rest of the day (its hire cost is still paid).
+- A hand hired at hour 23 is paid for and removed at that turn's day refresh without ever acting.
+- When hands vanish at the day refresh their carried inventory is dropped into the shed like the farmer's (§4), subject to capacity.
 
 ---
 

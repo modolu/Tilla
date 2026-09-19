@@ -3,10 +3,26 @@
 import pytest
 
 from kaggriculture_bot import economy
-from kaggriculture_bot.constants import EARLY_MIN_CASH_RESERVE, FEED_WHEAT_RESERVE_PER_ANIMAL
-from kaggriculture_bot.models import MarketOp, MarketOrder, ObjectiveKind, OpportunityKind, Position
+from kaggriculture_bot.constants import (
+    EARLY_MIN_CASH_RESERVE,
+    FEED_WHEAT_RESERVE_PER_ANIMAL,
+    MAX_DAILY_HIRES,
+    MAX_MARKET_ORDERS_PER_TURN,
+)
+from kaggriculture_bot.models import (
+    PRIORITY_DAILY_WORK,
+    JobKind,
+    MarketOp,
+    MarketOrder,
+    ObjectiveKind,
+    OpportunityKind,
+    Position,
+    UnitAction,
+    UnitOp,
+)
 from kaggriculture_bot.runtime import reset_episode_memory
 from kaggriculture_bot.strategy import PLANT_DEADLINE_HOUR, choose_plan
+from kaggriculture_bot.tasks import assign_jobs, assign_units, generate_jobs
 from tests.conftest import make_state, raw_animal, raw_plant
 
 P = Position
@@ -94,6 +110,8 @@ def test_at_risk_animal_feed_outranks_planting_when_wheat_is_carried(obs_no_hand
 
 
 def test_feed_fetches_from_shed_when_not_carried(obs_no_hands):
+    """Feeding is planned as the FEED objective; the shed fetch is a task-layer
+    prerequisite, and the wheat it will pick up is kept out of the sale."""
     state = make_state(
         obs_no_hands,
         day=3,
@@ -103,12 +121,15 @@ def test_feed_fetches_from_shed_when_not_carried(obs_no_hands):
         seeds={"WHEAT": 5},
     )
     plan = plan_for(state)
-    assert plan.objective.kind is ObjectiveKind.FETCH_FEED
-    assert plan.objective.targets == (P(4, 4),)  # only unlocked shed access tile
+    assert plan.objective.kind is ObjectiveKind.FEED_ANIMAL
+    assert plan.objective.targets == (P(1, 1),)
     assert plan.objective.item == "WHEAT" and plan.objective.quantity == 1
+    assert not [o for o in plan.market if o.op is MarketOp.BUY_PRODUCT]
     # The same-turn PICKUP (1) and the feed reserve (2 per animal) are kept back from the sale.
     sells = [o for o in plan.market if o.op is MarketOp.SELL]
     assert sells == [MarketOrder(MarketOp.SELL, "WHEAT", 6 - 1 - FEED_WHEAT_RESERVE_PER_ANIMAL)]
+    turn = assign_jobs(state, plan, reset_episode_memory(state.player_id))
+    assert turn.farmer == UnitAction(UnitOp.PICKUP, "WHEAT", 1)  # at the only access tile
 
 
 def test_feed_buys_wheat_only_when_none_is_available(obs_no_hands):
@@ -120,10 +141,12 @@ def test_feed_buys_wheat_only_when_none_is_available(obs_no_hands):
         seeds={"WHEAT": 5},
     )
     plan = plan_for(state)
-    assert plan.objective.kind is ObjectiveKind.REPOSITION
-    assert plan.objective.targets == (P(4, 4),)
+    assert plan.objective.kind is ObjectiveKind.FEED_ANIMAL
     assert MarketOrder(MarketOp.BUY_PRODUCT, "WHEAT", 1) in plan.market
     assert not [o for o in plan.market if o.op is MarketOp.BUY_SEED]
+    # Nothing to fetch yet (the wheat arrives after this turn): the farmer plants meanwhile.
+    turn = assign_jobs(state, plan, reset_episode_memory(state.player_id))
+    assert turn.farmer == UnitAction(UnitOp.PLANT, "WHEAT")
 
 
 def test_at_risk_crop_is_watered_before_a_feed_shed_trip(obs_no_hands):
@@ -138,7 +161,12 @@ def test_at_risk_crop_is_watered_before_a_feed_shed_trip(obs_no_hands):
         shed={"WHEAT": 3},
     )
     plan = plan_for(state)
-    assert plan.objective.kind is ObjectiveKind.WATER_CROP
+    kinds = [o.kind for o in plan.all_objectives() if o.priority == plan.objective.priority]
+    assert set(kinds) == {ObjectiveKind.FEED_ANIMAL, ObjectiveKind.WATER_CROP}
+    # Both are survival work; the lone farmer takes the adjacent watering before the
+    # feed trip (shed pickup + walk), which is the assignment layer's job.
+    turn = assign_jobs(state, plan, reset_episode_memory(state.player_id))
+    assert turn.farmer == UnitAction(UnitOp.NORTH)
 
 
 def test_routine_feeding_outranks_planting(obs_no_hands):
@@ -256,9 +284,7 @@ def test_animal_is_bought_only_once_its_structure_exists(obs_no_hands):
     if top.kind is OpportunityKind.ANIMAL and top.product == "GOOSE":
         plan = plan_for(state)
         assert MarketOrder(MarketOp.BUY_ANIMAL, "GOOSE", 1) in plan.market
-        assert plan.objective.kind is ObjectiveKind.REPOSITION and plan.objective.targets == (
-            P(4, 4),
-        )
+        assert not [o for o in plan.all_objectives() if o.kind is ObjectiveKind.BUILD_STRUCTURE]
 
 
 @pytest.mark.parametrize("hour", [23])
@@ -325,11 +351,15 @@ def test_bought_animal_is_fetched_and_placed_as_daily_work(obs_no_hands):
     tiles[(2, 2)] = {"kind": "COOP"}
     state = make_state(obs_no_hands, day=3, hour=4, tiles=tiles, shed={"GOOSE": 1})
     plan = plan_for(state)
-    kinds = {o.kind for o in (plan.objective, *plan.equal_priority)}
-    assert ObjectiveKind.FETCH_ITEM in kinds
+    place = [o for o in plan.all_objectives() if o.kind is ObjectiveKind.PLACE_ANIMAL]
+    assert place and place[0].targets == (P(2, 2),) and place[0].item == "GOOSE"
+    assert place[0].priority == PRIORITY_DAILY_WORK
+    # The shed fetch is a prerequisite handled by the task layer.
+    turn = assign_jobs(state, plan, reset_episode_memory(state.player_id))
+    assert turn.farmer == UnitAction(UnitOp.PICKUP, "GOOSE", 1)
     carried_state = make_state(obs_no_hands, day=3, hour=4, tiles=tiles, inventory={"GOOSE": 1})
     plan = plan_for(carried_state)
-    kinds = {o.kind: o for o in (plan.objective, *plan.equal_priority)}
+    kinds = {o.kind: o for o in plan.all_objectives()}
     assert ObjectiveKind.PLACE_ANIMAL in kinds and kinds[ObjectiveKind.PLACE_ANIMAL].targets == (
         P(2, 2),
     )
@@ -344,8 +374,6 @@ def test_carried_animal_without_structure_builds_one(obs_no_hands):
 
 
 def test_daily_work_is_batched_by_nearest_target(obs_no_hands):
-    from kaggriculture_bot.tasks import choose_nearest_objective
-
     tiles = {
         (0, 0): raw_plant(planted_day=4, consecutive_unwatered=0),  # far: needs water
         (4, 3): raw_animal(fed_today=True, yield_units=3),  # adjacent: eggs at cap-1
@@ -353,8 +381,9 @@ def test_daily_work_is_batched_by_nearest_target(obs_no_hands):
     state = make_state(obs_no_hands, day=6, hour=4, tiles=tiles)
     plan = plan_for(state)
     assert plan.objective.kind is ObjectiveKind.WATER_CROP  # routine care listed first ...
-    chosen = choose_nearest_objective(state, plan)
-    assert chosen.kind is ObjectiveKind.HARVEST  # ... but the nearest work is executed first
+    jobs = generate_jobs(state, plan)
+    assigned = assign_units(state, jobs, reset_episode_memory(state.player_id))
+    assert assigned[0].kind is JobKind.HARVEST  # ... but the nearest work is executed first
 
 
 # --- Selling and delivery -------------------------------------------------------------------------
@@ -402,20 +431,103 @@ def test_idle_farmer_delivers_carried_produce(obs_no_hands):
     assert plan.objective.kind is ObjectiveKind.DELIVER
 
 
-# --- Scope guards: nothing beyond Milestone 3 ----------------------------------------------------
+# --- Scope guards: nothing beyond Milestone 4 ----------------------------------------------------
 
 
-def test_no_land_purchase_or_hiring_in_any_state(obs_no_hands, obs_midgame_p1, obs_final):
+def test_no_land_purchase_in_any_state_and_market_stays_within_the_cap(
+    obs_no_hands, obs_midgame_p1, obs_final
+):
     for base in (obs_no_hands, obs_midgame_p1, obs_final):
         for day in (0, 5, 12, 26, 29):
             for hour in (0, 12, 23):
                 state = make_state(base, day=day, hour=hour, money=9000)
                 plan = plan_for(state)
+                assert len(plan.market) <= MAX_MARKET_ORDERS_PER_TURN
                 for order in plan.market:
-                    assert order.op not in (MarketOp.BUY_LAND, MarketOp.HIRE), order
+                    assert order.op is not MarketOp.BUY_LAND, order
                     if order.op is MarketOp.BUY_PRODUCT:
                         assert order.item in ("WHEAT", "FERTILIZER")
+                hires = [o for o in plan.market if o.op is MarketOp.HIRE]
+                assert len(hires) == plan.hires <= MAX_DAILY_HIRES - state.me.hires_today
+                if hour == 23 or day >= 29 and hour == 23:
+                    assert not hires  # a hand hired now would never act
                 assert plan.objective.kind in set(ObjectiveKind)
+
+
+# --- Hiring policy (TILLA_STRATEGY.md §12) --------------------------------------------------------
+
+
+def _hire_orders(plan):
+    return [o for o in plan.market if o.op is MarketOp.HIRE]
+
+
+def test_hands_are_hired_for_a_valuable_backlog_the_farmer_cannot_finish(obs_no_hands):
+    field = {
+        (x, y): raw_plant(planted_day=2, consecutive_unwatered=0)
+        for x in range(5)
+        for y in range(5)
+    }
+    state = make_state(obs_no_hands, day=6, hour=0, tiles=field, money=2000)
+    plan = plan_for(state)
+    assert plan.hires >= 1 and len(_hire_orders(plan)) == plan.hires
+    assert plan.market[-plan.hires :] == tuple(_hire_orders(plan))  # hires come last
+    assert plan.hires <= 3  # the fourth same-turn spawn (5,5) is stuck (TILLA_RULES.md §5)
+
+
+def test_no_hiring_without_work(obs_no_hands):
+    state = make_state(obs_no_hands, day=6, hour=0, money=EARLY_MIN_CASH_RESERVE)
+    assert plan_for(state).hires == 0
+
+
+def test_no_hiring_when_the_current_workforce_covers_the_backlog(obs_no_hands):
+    state = make_state(
+        obs_no_hands,
+        day=6,
+        hour=0,
+        tiles={(4, 3): raw_plant(planted_day=2, consecutive_unwatered=0)},
+    )
+    assert plan_for(state).hires == 0
+
+
+def test_no_hiring_late_in_the_day(obs_no_hands):
+    field = {
+        (x, y): raw_plant(planted_day=2, consecutive_unwatered=0)
+        for x in range(5)
+        for y in range(5)
+    }
+    for hour in (21, 22, 23):
+        state = make_state(obs_no_hands, day=6, hour=hour, tiles=field, money=2000)
+        assert plan_for(state).hires == 0
+
+
+def test_care_hands_are_paid_from_the_reserve(obs_no_hands):
+    """Twenty-five plants to water with 300 coins (= the hard floor): the hands
+    that keep them alive are still hired, never taking the bank below zero.
+    Hands for work beyond care stay behind the reserve (see test_economy)."""
+    field = {
+        (x, y): raw_plant(planted_day=2, consecutive_unwatered=0)
+        for x in range(5)
+        for y in range(5)
+    }
+    broke = make_state(obs_no_hands, day=6, hour=0, tiles=field, money=EARLY_MIN_CASH_RESERVE)
+    plan = plan_for(broke)
+    assert plan.hires >= 1
+    spend = sum(economy.hire_cost(k) for k in range(plan.hires))
+    assert broke.me.money - spend >= 0
+    care = [o for o in plan.all_objectives() if o.priority <= PRIORITY_DAILY_WORK]
+    assert sum(len(o.targets) for o in care) == 25
+
+
+def test_hiring_stops_at_the_daily_cap(obs_two_hands):
+    field = {
+        (x, y): raw_plant(planted_day=2, consecutive_unwatered=0)
+        for x in range(5)
+        for y in range(5)
+    }
+    base = make_state(obs_two_hands, day=6, hour=0, tiles=field, money=5000)
+    assert base.me.hires_today == 2
+    plan = plan_for(base)
+    assert plan.hires + base.me.hires_today <= MAX_DAILY_HIRES
 
 
 # --- Official-environment scenarios (farm-care loop end to end) --------------------------------
@@ -454,18 +566,19 @@ def test_scenario_production_cycle_realizes_banked_proceeds_and_stays_in_scope()
         env.step([action, PASS_ACTION])
     farmer_ops = {a["farmer"][0] for _, _, a in actions}
     market_ops = {o[0] for _, _, a in actions for o in a["market"]}
-    assert {"PLANT", "WATER", "HARVEST"} <= farmer_ops
-    assert {"BUY_SEED", "SELL"} <= market_ops
-    # Nothing outside the Milestone 3 scope was ever attempted: no land, no hiring.
-    assert "BUY_LAND" not in market_ops and "HIRE" not in market_ops
-    assert farmer_ops <= {
+    unit_ops = farmer_ops | {h[0] for _, _, a in actions for h in a["hands"]}
+    assert {"PLANT", "WATER", "HARVEST"} <= unit_ops
+    assert {"BUY_SEED", "SELL", "HIRE"} <= market_ops
+    # Nothing outside the Milestone 4 scope was ever attempted: no land.
+    assert "BUY_LAND" not in market_ops
+    assert unit_ops <= {
         "PASS", "NORTH", "SOUTH", "EAST", "WEST", "PLANT", "WATER", "HARVEST", "DROP",
         "PICKUP", "BUILD_COOP", "BUILD_PASTURE", "PLACE", "FEED", "COLLECT_FERTILIZER", "FERTILIZE",
     }  # fmt: skip
     # Late viability: no planting or seed purchase once no crop can mature before the end.
     late = [a for d, _, a in actions if d >= 27]
     assert late
-    assert not [a for a in late if a["farmer"][0] == "PLANT"]
+    assert not [a for a in late if "PLANT" in {a["farmer"][0], *(h[0] for h in a["hands"])}]
     assert not [a for a in late if any(o[0] == "BUY_SEED" for o in a["market"])]
     final = env.steps[-1][0]
     assert final["status"] == "DONE" and final["reward"] > 3000
@@ -629,13 +742,15 @@ def _run_days(env, agent, days):
 
 
 def _ops(env, seat=0):
-    farmer, market = [], []
+    """Unit actions (farmer and hands) and market orders issued by ``seat``."""
+    units, market = [], []
     for step in env.steps[1:]:
         action = step[seat]["action"]
         if isinstance(action, dict):
-            farmer.append(tuple(action["farmer"]))
+            units.append(tuple(action["farmer"]))
+            units.extend(tuple(h) for h in action["hands"])
             market.extend(tuple(o) for o in action["market"])
-    return farmer, market
+    return units, market
 
 
 def test_scenario_animal_investment_chain_executes_and_pays_out():
@@ -645,10 +760,10 @@ def test_scenario_animal_investment_chain_executes_and_pays_out():
 
     env = _env(seed=5)
     _run_days(env, main.agent, 9)
-    farmer, market = _ops(env)
-    assert ("BUILD_COOP",) in farmer and ("PICKUP", "GOOSE", 1) in farmer
-    assert ("PLACE", "GOOSE") in farmer and ("FEED",) in farmer
-    assert ("COLLECT_FERTILIZER",) in farmer and ("HARVEST",) in farmer
+    units, market = _ops(env)
+    assert ("BUILD_COOP",) in units and ("PICKUP", "GOOSE", 1) in units
+    assert ("PLACE", "GOOSE") in units and ("FEED",) in units
+    assert ("COLLECT_FERTILIZER",) in units and ("HARVEST",) in units
     assert ("BUY_ANIMAL", "GOOSE", 1) in market
     assert any(o[:2] == ("SELL", "EGG") for o in market)
     assert any(o[:2] == ("SELL", "FERTILIZER") for o in market)
@@ -669,13 +784,10 @@ def test_scenario_crops_are_chosen_economically_not_by_habit():
 
     env = _env(seed=5)
     _run_days(env, main.agent, 13)
-    farmer, market = _ops(env)
-    assert (
-        ("PLANT", "MELON") in farmer
-        and ("BUY_SEED", "MELON", 8) in market
-        or any(o[0] == "BUY_SEED" and o[1] == "MELON" for o in market)
-    )
-    assert ("HARVEST",) in farmer
+    units, market = _ops(env)
+    assert ("PLANT", "MELON") in units
+    assert any(o[0] == "BUY_SEED" and o[1] == "MELON" for o in market)
+    assert ("HARVEST",) in units
     assert any(o[:2] == ("SELL", "MELON") for o in market)
     assert env.state[0].observation["farms"][0]["money"] > 3000
 
@@ -706,9 +818,9 @@ def test_scenario_fertilizer_is_applied_when_its_incremental_value_clears_its_co
     _drive(env, lambda o: {"farmer": ["PLANT", "TOMATO"], "hands": [], "market": []})
     _drive(env, lambda o: {"farmer": ["WATER"], "hands": [], "market": []})
     _run_days(env, main.agent, 11)  # Tilla takes over: daily care, then economics
-    farmer, market = _ops(env)
+    units, market = _ops(env)
     assert any(o[:2] == ("BUY_PRODUCT", "FERTILIZER") for o in market)
-    assert ("PICKUP", "FERTILIZER", 1) in farmer and ("FERTILIZE",) in farmer
+    assert ("PICKUP", "FERTILIZER", 1) in units and ("FERTILIZE",) in units
     fertilized = [
         (step[0]["observation"]["day"], t["crop"])
         for step in env.steps
@@ -724,3 +836,78 @@ def test_scenario_no_livestock_or_fertilizer_purchase_below_reserve(obs_no_hands
     plan = plan_for(state)
     assert not [o for o in plan.market if o.op in (MarketOp.BUY_ANIMAL, MarketOp.BUY_PRODUCT)]
     assert plan.objective.kind is not ObjectiveKind.BUILD_STRUCTURE
+
+
+# --- Milestone 4 care-starvation scenarios in the official environment ----------------------------
+
+
+def _hand_days(env, seat=0):
+    """Per-day count of hands observed on ``seat``'s farm at hour 12."""
+    days = {}
+    for step in env.steps:
+        obs = step[0]["observation"]
+        if obs["hour"] == 12:
+            days[obs["day"]] = len(obs["farms"][seat]["hands"])
+    return days
+
+
+def test_scenario_full_field_is_cared_for_by_hired_hands_without_losses():
+    """A 25-tile field is more than one farmer can water: hands are hired daily
+    and no crop is lost to missed watering, no fresh planting dies, no animal
+    escapes, and hands do not spend the day passing."""
+    import main
+    from tools.harness import _care_losses
+
+    env = _env(seed=5)
+    _run_days(env, main.agent, 12)
+    losses = _care_losses(env.steps, 0)
+    assert losses.get("crops_lost_unwatered", 0) == 0
+    assert losses.get("fresh_plantings_unwatered", 0) == 0
+    assert losses.get("animals_escaped", 0) == 0
+    hands = _hand_days(env)
+    assert any(n >= 2 for n in hands.values())
+    _, market = _ops(env)
+    assert ("HIRE",) in market
+    hand_ops = [tuple(h) for step in env.steps[1:] for h in step[0]["action"]["hands"]]
+    assert hand_ops and sum(1 for h in hand_ops if h[0] == "PASS") / len(hand_ops) < 0.5
+
+
+def test_scenario_care_hands_are_still_hired_when_cash_sits_on_the_reserve_floor():
+    """Cash is forced down to the hard floor with a full field: the reserve does
+    not starve care, hands keep being hired for it, and nothing is lost."""
+    import main
+    from tools.harness import _care_losses
+
+    env = _env(seed=5)
+    _run_days(env, main.agent, 6)
+    obs = env.state[0].observation
+    assert obs["day"] == 6 and obs["hour"] == 0
+    tiles = [t for row in obs["farms"][0]["tiles"] for t in row]
+    plants = sum(1 for t in tiles if isinstance(t, dict) and t.get("kind") == "PLANT")
+    assert plants >= 20
+    obs["farms"][0]["money"] = float(EARLY_MIN_CASH_RESERVE)
+    start = len(env.steps)
+    _run_days(env, main.agent, 9)
+    losses = _care_losses(env.steps[start - 1 :], 0)
+    assert losses.get("crops_lost_unwatered", 0) == 0
+    assert losses.get("animals_escaped", 0) == 0
+    hands = _hand_days(env)
+    assert all(hands.get(day, 0) >= 1 for day in (6, 7, 8))
+    money = [step[0]["observation"]["farms"][0]["money"] for step in env.steps[start:]]
+    assert min(money) >= 0
+
+
+def test_scenario_hands_never_spawn_stuck_on_the_south_east_tile():
+    """The hiring plan never orders a hire whose spawn tile would be (5,5) while
+    NE and SW are locked, so no paid hand is stuck for a day."""
+    import main
+
+    env = _env(seed=5)
+    _run_days(env, main.agent, 8)
+    stuck = [
+        (step[0]["observation"]["day"], step[0]["observation"]["hour"])
+        for step in env.steps
+        if [5, 5] in step[0]["observation"]["farms"][0]["hands"]
+        and step[0]["observation"]["farms"][0]["tiles"][4][5] == "LOCKED"
+    ]
+    assert stuck == []

@@ -26,7 +26,7 @@ def agent(obs):
         hand_count = len(state.me.hands)
         memory = get_episode_memory(state.player_id, state.step)
         plan = choose_plan(state, memory)
-        turn = assign_jobs(state, plan)
+        turn = assign_jobs(state, plan, memory)
         action = validate_or_fallback(build_action(turn), hand_count)
         remember_turn(memory, state)
         return action

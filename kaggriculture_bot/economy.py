@@ -29,17 +29,22 @@ from kaggriculture_bot.constants import (
     FEED_WHEAT_RESERVE_PER_ANIMAL,
     FERTILIZER,
     FERTILIZER_BYPRODUCT_REALIZATION,
+    HAND_ACTIONS_PER_JOB,
+    HAND_DAILY_ACTIONS,
+    HAND_SETUP_ACTIONS,
     LABOR_COST_PER_ACTION,
     LAND_SCARCITY_FREE_TILES,
     LAND_TILE_DAY_VALUE,
     LAST_DAY,
     LIQUIDATE_START_DAY,
     MARKET_GLUT_PENALTY,
+    MAX_DAILY_HIRES,
+    MIN_HAND_USEFUL_ACTIONS,
     PHASE_WEIGHT,
+    PLANNED_DAILY_HANDS,
     PLANT_DAILY_ACTIONS,
     PRODUCTS,
     RESERVE_EMERGENCY_BUFFER,
-    RESERVE_HAND_BUDGET,
     SHED_EMERGENCY,
     TURNS_PER_DAY,
     WHEAT,
@@ -47,8 +52,10 @@ from kaggriculture_bot.constants import (
 )
 from kaggriculture_bot.features import (
     animals,
+    can_act_from,
     empty_structures,
     empty_tiles,
+    hand_spawn_positions,
     min_cash_reserve,
     plant_age,
     plants,
@@ -58,6 +65,9 @@ from kaggriculture_bot.features import (
 )
 from kaggriculture_bot.models import (
     GameState,
+    HiringDecision,
+    MarketOp,
+    MarketOrder,
     OpportunityEstimate,
     OpportunityKind,
     PlantTile,
@@ -79,11 +89,19 @@ def buy_price(state: GameState, product: str) -> int:
     return current_price(state, product) + 1
 
 
+def order_cost(state: GameState, order: MarketOrder) -> int:
+    """Cash a purchase order commits this turn (0 for sales; hires are priced by hire_cost)."""
+    qty = order.quantity or 0
+    if order.op is MarketOp.BUY_SEED and order.item in CROPS:
+        return CROPS[order.item].seed * qty
+    if order.op is MarketOp.BUY_ANIMAL and order.item in ANIMALS:
+        return ANIMALS[order.item].cost * qty
+    if order.op is MarketOp.BUY_PRODUCT and order.item is not None:
+        return buy_price(state, order.item) * qty
+    return 0
+
+
 # --- Cost primitives -------------------------------------------------------------------------
-
-
-def farmer_utilization(state: GameState) -> float:
-    return min(1.0, committed_daily_actions(state) / FARMER_DAILY_ACTION_BUDGET)
 
 
 def reference_action_value(state: GameState) -> float:
@@ -132,8 +150,19 @@ def committed_daily_actions(state: GameState) -> float:
     )
 
 
+def daily_action_budget() -> float:
+    """Daily care capacity the planner sizes production for: the farmer plus
+    the hands it plans to hire while there is work (TILLA_STRATEGY.md §12)."""
+    return FARMER_DAILY_ACTION_BUDGET + PLANNED_DAILY_HANDS * HAND_DAILY_ACTIONS
+
+
 def labor_capacity_remaining(state: GameState) -> float:
-    return FARMER_DAILY_ACTION_BUDGET - committed_daily_actions(state)
+    return daily_action_budget() - committed_daily_actions(state)
+
+
+def farmer_utilization(state: GameState) -> float:
+    """Share of the planned daily care capacity already committed."""
+    return min(1.0, committed_daily_actions(state) / daily_action_budget())
 
 
 # --- Crop production timing (verified mechanics, TILLA_RULES.md §8-§10) ----------------
@@ -461,6 +490,108 @@ def expected_seed_replenishment(state: GameState) -> int:
     return total
 
 
+# --- Hiring (TILLA_STRATEGY.md §12) --------------------------------------------------------
+
+
+def hire_cost(hires_already_today: int) -> int:
+    """Fibonacci hire cost 1, 1, 2, 3, 5, ... indexed by hires made today (TILLA_RULES.md §5)."""
+    a, b = 1, 1
+    for _ in range(hires_already_today):
+        a, b = b, a + b
+    return a
+
+
+def hands_needed_for_care(state: GameState) -> int:
+    """Hands whose daily capacity the committed care already relies on."""
+    excess = committed_daily_actions(state) - FARMER_DAILY_ACTION_BUDGET
+    if excess <= 0:
+        return 0
+    return min(PLANNED_DAILY_HANDS, int(-(-excess // HAND_DAILY_ACTIONS)))
+
+
+def expected_hand_spend(state: GameState) -> int:
+    """Cheap-hand budget: tomorrow's hire cost for the hands current care relies on."""
+    if state.day >= LAST_DAY:
+        return 0
+    return sum(hire_cost(k) for k in range(hands_needed_for_care(state)))
+
+
+def hiring_plan(
+    state: GameState, backlog_actions: float, reserve: int, care_actions: float = 0.0
+) -> HiringDecision:
+    """How many hands to hire this turn.
+
+    A hand hired now can act from the next turn until the day refresh, minus
+    spawn/travel setup. Its value is the backlog it can absorb that the
+    current workforce cannot finish today, priced at the marginal action value
+    (labor_price). Hire while that value exceeds the next Fibonacci cost, the
+    reserve holds, the predicted spawn tile is not stuck, and the daily cap is
+    not reached. ``care_actions`` is the part of the backlog that keeps
+    existing assets alive; hands it still needs are paid from the reserve
+    like survival feed (an avoidable loss is irreversible), never below zero.
+    """
+    farm = state.me
+    remaining = TURNS_PER_DAY - 1 - state.hour
+    existing_units = len(farm.units)
+    existing_capacity = existing_units * max(0, remaining)
+    uncovered = max(0.0, backlog_actions - existing_capacity)
+    care_uncovered = max(0.0, min(care_actions, backlog_actions) - existing_capacity)
+    usable = max(0, remaining - HAND_SETUP_ACTIONS)
+    action_value = labor_price(state)
+    spawns = hand_spawn_positions(farm, MAX_DAILY_HIRES)
+    costs: list[int] = []
+    values: list[float] = []
+    money = farm.money
+    hires_today = farm.hires_today
+    reason = ""
+    while True:
+        cost = hire_cost(hires_today + len(costs))
+        if len(costs) + hires_today >= MAX_DAILY_HIRES:
+            reason = "daily hire cap"
+            break
+        enabled = min(usable, uncovered)
+        if enabled < MIN_HAND_USEFUL_ACTIONS:
+            reason = "no realizable backlog for another hand today"
+            break
+        value = enabled * action_value
+        if value <= cost:
+            reason = f"marginal value {value:.1f} <= cost {cost}"
+            break
+        floor = 0 if care_uncovered >= MIN_HAND_USEFUL_ACTIONS else reserve
+        if money - cost < floor:
+            reason = "cash reserve"
+            break
+        if not can_act_from(farm, spawns[len(costs)]):
+            reason = f"spawn tile {spawns[len(costs)]} is stuck this turn"
+            break
+        costs.append(cost)
+        values.append(value)
+        money -= cost
+        uncovered -= enabled
+        care_uncovered = max(0.0, care_uncovered - enabled)
+    return HiringDecision(
+        existing_units=existing_units,
+        hires_today=hires_today,
+        remaining_turns=remaining,
+        backlog_actions=backlog_actions,
+        existing_capacity=existing_capacity,
+        uncovered_actions=max(0.0, backlog_actions - existing_capacity),
+        action_value=action_value,
+        costs=tuple(costs),
+        values=tuple(values),
+        next_cost=hire_cost(hires_today + len(costs)),
+        hires=len(costs),
+        reason=reason,
+        care_actions=care_actions,
+        spawns=spawns[: len(costs)],
+    )
+
+
+def job_backlog_actions(job_count: int) -> float:
+    """Estimated unit actions to clear ``job_count`` jobs (action + travel each)."""
+    return job_count * HAND_ACTIONS_PER_JOB
+
+
 def cash_reserve(state: GameState) -> int:
     """Dynamic reserve with the hard floors of TILLA_STRATEGY.md §6/§20."""
     floor = min_cash_reserve(state.day)
@@ -469,7 +600,7 @@ def cash_reserve(state: GameState) -> int:
     dynamic = (
         expected_feed_purchases(state)
         + expected_seed_replenishment(state)
-        + RESERVE_HAND_BUDGET
+        + expected_hand_spend(state)
         + RESERVE_EMERGENCY_BUFFER
     )
     return max(floor, dynamic)

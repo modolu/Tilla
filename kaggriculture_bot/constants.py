@@ -121,10 +121,33 @@ PHASE_WEIGHT = 1.0
 # Share of an animal's daily fertilizer byproduct assumed collected and sold.
 FERTILIZER_BYPRODUCT_REALIZATION = 0.5
 
-# Dynamic cash reserve components (TILLA_STRATEGY.md §6): hired-hand budget is a
-# documented zero until hiring is part of policy (Milestone 4).
-RESERVE_HAND_BUDGET = 0
+# Dynamic cash reserve components (TILLA_STRATEGY.md §6). The hand budget is
+# computed from the hiring policy (economy.expected_hand_spend).
 RESERVE_EMERGENCY_BUFFER = 50
+
+# --- Milestone 4 hiring / multi-unit parameters (TILLA_STRATEGY.md §12) --------------
+
+# Hands the planner budgets for when sizing production it will have to care
+# for daily (hired only when the same-day marginal value clears the cost).
+PLANNED_DAILY_HANDS = 3
+
+# Amortized daily care actions one hired hand contributes to the labor budget.
+HAND_DAILY_ACTIONS = 16.0
+
+# Unit actions a job costs a hand: the action itself plus expected travel.
+HAND_ACTIONS_PER_JOB = 2.5
+
+# Turns a new hand spends spawning and walking to its first job.
+HAND_SETUP_ACTIONS = 3
+
+# A hand is hired only if it can perform at least this many useful actions today.
+MIN_HAND_USEFUL_ACTIONS = 4
+
+# Hard cap on hires per day (the Fibonacci cost curve makes more pointless).
+MAX_DAILY_HIRES = 6
+# A job that must start within this many turns to still finish today is
+# scheduled ahead of routine work when the other units can cover that work.
+PROMOTION_SLACK_TURNS = 1
 
 # Bound on retained opponent summaries in EpisodeMemory (implementation
 # parameter, not a game rule). Summaries themselves arrive with Milestone 6.

@@ -93,6 +93,37 @@ def usable_shed_access(farm: FarmState) -> tuple[Position, ...]:
     )
 
 
+def hand_spawn_positions(farm: FarmState, count: int) -> tuple[Position, ...]:
+    """Where the next ``count`` hires would spawn given the units' current
+    positions (TILLA_RULES.md §5): each on the least-occupied shed access
+    tile, NW→NE→SW→SE on ties, counting the hands hired just before it."""
+    access = shed_access_positions(farm.board_size)
+    occupants = {pos: 0 for pos in access}
+    for unit in farm.units:
+        if unit.position in occupants:
+            occupants[unit.position] += 1
+    spawns: list[Position] = []
+    for _ in range(count):
+        pos = min(access, key=lambda p: (occupants[p], access.index(p)))
+        occupants[pos] += 1
+        spawns.append(pos)
+    return tuple(spawns)
+
+
+def can_act_from(farm: FarmState, pos: Position) -> bool:
+    """A unit at ``pos`` can do work somewhere: the tile is unlocked, or an
+    adjacent tile is (a hand spawned on a locked access tile whose neighbours
+    are all locked is stuck there for the day, TILLA_RULES.md §5)."""
+    size = farm.board_size
+    candidates = (pos, Position(pos.x, pos.y - 1), Position(pos.x, pos.y + 1))
+    candidates += (Position(pos.x + 1, pos.y), Position(pos.x - 1, pos.y))
+    for cand in candidates:
+        if 0 <= cand.x < size and 0 <= cand.y < size:
+            if farm.tiles[cand.y][cand.x].kind is not TileKind.LOCKED:
+                return True
+    return False
+
+
 def distance_to_shed(pos: Position, size: int) -> int:
     """Manhattan distance to the closest shed access tile (a metric, not a path)."""
     return min(abs(pos.x - p.x) + abs(pos.y - p.y) for p in shed_access_positions(size))
