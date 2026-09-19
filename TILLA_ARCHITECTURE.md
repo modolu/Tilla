@@ -155,7 +155,7 @@ Position
 UnitState
 - index: int              # 0 farmer, 1+ hired hands
 - position: Position
-- inventory: dict[str, int]
+- inventory: dict[str, int] | None
 
 FarmState
 - player_id: int
@@ -207,10 +207,11 @@ EpisodeMemory
 - `EpisodeMemory` is reset when `obs["step"] == 0`.
 - Runtime memory is keyed by `player_id` so local self-play with the same imported agent does not mix both players' histories.
 - No unbounded history: retain summaries needed for inference, not every observation.
+- `UnitState.inventory` is a dict only when that unit's carried inventory is observable. For opponent units it is `None` because opponent carried inventory is private. `None` means unobservable, not empty; no module may treat it as a known empty inventory.
 
 ### No hidden state assumptions
 
-Only our own `private` state is visible. Opponent shed, seeds, and carried inventory are not observable. Opponent models must label estimates as estimates; strategy must not treat inferred private inventory as fact.
+Only our own `private` state is visible. Opponent shed, seeds, and carried inventory are not observable. The typed state represents this directly: our units carry a real inventory dict, opponent units carry `inventory = None`. Opponent models must label estimates as estimates; strategy must not treat inferred private inventory as fact.
 
 ---
 

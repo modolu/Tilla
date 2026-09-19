@@ -38,6 +38,9 @@ def test_every_official_fixture_parses_to_consistent_state(name):
         assert isinstance(farm.money, int)
         assert farm.units[0].index == 0
         assert [u.index for u in farm.hands] == list(range(1, len(farm.units)))
+    # Visibility contract: our inventories are observable dicts; the opponent's are None.
+    assert all(isinstance(u.inventory, dict) for u in state.me.units)
+    assert all(u.inventory is None for u in state.opponent.units)
     assert set(state.market.inventory) == set(state.market.prices)
     assert all(isinstance(v, int) for v in state.market.inventory.values())
     assert all(isinstance(v, int) for v in state.market.prices.values())
