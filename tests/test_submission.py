@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 import main
-from kaggriculture_bot.actions import build_pass_action
 from kaggriculture_bot.runtime import get_episode_memory
+from kaggriculture_bot.validator import validate_or_fallback
 from tests.conftest import OFFICIAL_FIXTURES, load_fixture
 from tests.test_actions import assert_valid_action_shape
 from tools.package_submission import (
@@ -35,18 +35,18 @@ def test_main_agent_is_importable_callable():
     assert callable(module.agent)
 
 
-def test_agent_returns_pass_shape_with_no_hands(obs_no_hands):
+def test_agent_returns_legal_shape_with_no_hands(obs_no_hands):
     action = main.agent(obs_no_hands)
     assert_valid_action_shape(action, expected_hands=0)
-    assert action == {"farmer": ["PASS"], "hands": [], "market": []}
+    assert validate_or_fallback(action, 0) == action  # already legal: validator is a no-op
 
 
 def test_agent_returns_one_pass_per_hired_hand(obs_two_hands):
+    """Hands are not planned until Milestone 4: each hired hand legally passes."""
     action = main.agent(obs_two_hands)
     assert_valid_action_shape(action, expected_hands=2)
-    assert action["farmer"] == ["PASS"]
     assert action["hands"] == [["PASS"], ["PASS"]]
-    assert action["market"] == []
+    assert validate_or_fallback(action, 2) == action
 
 
 def test_agent_uses_observing_players_farm_for_hand_count(obs_two_hands):
@@ -106,12 +106,13 @@ def test_agent_fallback_is_valid_when_parser_itself_raises(monkeypatch, obs_two_
 
 
 @pytest.mark.parametrize("name", OFFICIAL_FIXTURES)
-def test_agent_returns_legal_pass_for_every_official_fixture(name):
+def test_agent_returns_legal_action_for_every_official_fixture(name):
     obs = load_fixture(name)
     expected_hands = len(obs["farms"][obs["player"]]["hands"])
     action = main.agent(obs)
     assert_valid_action_shape(action, expected_hands=expected_hands)
-    assert action == build_pass_action(expected_hands)
+    assert action["hands"] == [["PASS"]] * expected_hands
+    assert validate_or_fallback(action, expected_hands) == action
 
 
 def test_agent_keeps_per_player_episode_memory(obs_two_hands, obs_seat1_step1):
@@ -213,7 +214,9 @@ def test_packaged_archive_has_main_at_root_and_runs_agent(tmp_path, obs_two_hand
             if name == "main" or name.startswith(RUNTIME_PACKAGE):
                 del sys.modules[name]
         sys.modules.update(saved_modules)
-    assert action == {"farmer": ["PASS"], "hands": [["PASS"], ["PASS"]], "market": []}
+    # The packaged copy behaves exactly like the checkout for the same observation.
+    assert action == main.agent(obs_two_hands)
+    assert_valid_action_shape(action, expected_hands=2)
 
 
 def test_packaging_is_deterministic(tmp_path):

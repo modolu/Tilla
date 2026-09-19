@@ -241,9 +241,43 @@ def pass_turn_action(hand_count: int) -> TurnAction:
 # --- Episode memory --------------------------------------------------------------------
 
 
+# --- Strategic objectives and plans ------------------------------------------------------
+
+
+class ObjectiveKind(StrEnum):
+    """What the acting unit should accomplish this turn (strategy decides which)."""
+
+    WATER_CROP = "WATER_CROP"  # WATER on a target plant tile
+    FEED_ANIMAL = "FEED_ANIMAL"  # FEED on a target animal tile (wheat must be carried)
+    FETCH_FEED = "FETCH_FEED"  # PICKUP item/quantity at a shed access tile
+    HARVEST = "HARVEST"  # HARVEST on a target tile
+    PLANT = "PLANT"  # PLANT item on a target empty tile, only until deadline_hour
+    DELIVER = "DELIVER"  # DROP carried inventory at a shed access tile
+    REPOSITION = "REPOSITION"  # move toward a target, no on-tile action
+    PASS = "PASS"
+
+
+@dataclass(frozen=True)
+class Objective:
+    """A typed objective. ``targets`` are candidate tiles in stable (y, x)
+    order; the task layer chooses the nearest reachable one with pathing."""
+
+    kind: ObjectiveKind
+    targets: tuple[Position, ...] = ()
+    item: str | None = None
+    quantity: int | None = None
+    deadline_hour: int | None = None  # last hour the on-tile action may still be performed
+
+
 @dataclass(frozen=True)
 class StrategicPlan:
-    """Placeholder for the plan chosen by ``strategy.py`` (later milestone). No fields yet."""
+    """One turn's strategic decision: the unit objective plus market orders."""
+
+    objective: Objective
+    market: tuple[MarketOrder, ...] = ()
+
+
+PASS_OBJECTIVE = Objective(ObjectiveKind.PASS)
 
 
 @dataclass

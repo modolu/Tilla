@@ -72,8 +72,8 @@ SW | SE
 - NW starts unlocked.
 - Additional land unlock order is fixed: **NE, SW, SE**.
 - Prices: **1000, 2000, 4000**.
-- Locked tiles are passable by units.
-- Most tile actions on locked land are no-ops.
+- Locked tiles are **not passable**: a move whose destination tile is `"LOCKED"` is a no-op (only the destination is checked, so a unit standing on a locked tile may move off it).
+- Every tile action performed while standing on a locked tile is a no-op (including shed actions; see §4).
 - The shed is not a tile.
 
 A tile is one of:
@@ -105,7 +105,7 @@ Shed access positions on default 10×10 board are the four center tiles:
 (4,5) (5,5)
 ```
 
-Only NW starts unlocked, but shed actions can work from the center access tiles even if that standing tile is locked.
+Only NW starts unlocked. Shed actions work **only from an unlocked access tile**: while a unit stands on a locked access tile (e.g. `(5,4)` before NE is bought) `PICKUP`/`DROP`/`PLACE` are no-ops, so with only NW unlocked the sole usable access tile is `(4,4)`.
 
 ### Shed actions
 
@@ -146,7 +146,9 @@ WEST
 PASS
 ```
 
-Moving off-board is a no-op.
+Moving off-board is a no-op. Moving onto a locked tile is a no-op (§3).
+
+Verified against installed `kaggle-environments==1.30.2` (`kaggriculture.py` `_apply_unit_action`, `_spawn_hand`) and by `tests/test_rules_conformance.py`.
 
 ### Hiring
 
@@ -164,8 +166,8 @@ multiplied by `farmHandCostMult` (default 1).
 - Cost sequence resets each day.
 - Hands disappear at day end.
 - Hands must be rehired next day.
-- New hands spawn around the shed according to environment placement rules.
-- Spawn can occur on a locked tile; locked tiles are passable.
+- New hands spawn on the least-occupied shed access tile in NW→NE→SW→SE order.
+- Spawn can occur on a locked access tile; the hand may move off it but cannot move back onto locked land (§3).
 
 ---
 

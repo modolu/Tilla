@@ -35,6 +35,16 @@ env = make("kaggriculture", configuration={"episodeSteps": 720}, debug=True)
 env.run([main.agent, "pass"])
 ```
 
+## Baseline comparison agent
+
+`agents/baseline.py` is a frozen snapshot of the accepted Milestone 2
+farm-care baseline (offline comparison only; never packaged):
+
+```python
+from agents.baseline import agent as baseline_agent
+env.run([main.agent, baseline_agent])
+```
+
 ## Regenerate observation fixtures
 
 ```bash

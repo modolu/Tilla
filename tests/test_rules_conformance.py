@@ -169,3 +169,190 @@ def test_hand_observation_shape_after_hire():
     # Opponent's private state is never present in our observation.
     assert "inventories" not in env.state[0].observation["farms"][1]
     assert "shed" not in env.state[0].observation["farms"][1]
+
+
+# --- Movement and locked land (TILLA_RULES.md §3, §5) --------------------------------------
+
+PASS_ACTION = {"farmer": ["PASS"], "hands": [], "market": []}
+
+
+def _fresh_env(seed=3):
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": seed}, debug=True)
+    env.reset()
+    return env
+
+
+def _p0(env, action):
+    env.step([action, PASS_ACTION])
+    return env.state[0].observation
+
+
+def _farmer(env, market=None, farmer=None, hands=None):
+    return {"farmer": farmer or ["PASS"], "hands": hands or [], "market": market or []}
+
+
+def test_move_into_locked_tile_is_a_noop_and_edges_are_noops():
+    env = _fresh_env()
+    farm = env.state[0].observation["farms"][0]
+    assert farm["farmer"] == [4, 4] and farm["tiles"][4][5] == "LOCKED"
+    obs = _p0(env, _farmer(env, farmer=["EAST"]))  # (5,4) is LOCKED (NE quadrant)
+    assert obs["farms"][0]["farmer"] == [4, 4]
+    obs = _p0(env, _farmer(env, farmer=["SOUTH"]))  # (4,5) is LOCKED (SW quadrant)
+    assert obs["farms"][0]["farmer"] == [4, 4]
+    for _ in range(4):
+        obs = _p0(env, _farmer(env, farmer=["NORTH"]))
+    assert obs["farms"][0]["farmer"] == [4, 0]
+    obs = _p0(env, _farmer(env, farmer=["NORTH"]))  # off-board: no-op
+    assert obs["farms"][0]["farmer"] == [4, 0]
+    for _ in range(4):
+        obs = _p0(env, _farmer(env, farmer=["WEST"]))
+    assert obs["farms"][0]["farmer"] == [0, 0]
+    obs = _p0(env, _farmer(env, farmer=["WEST"]))
+    assert obs["farms"][0]["farmer"] == [0, 0]
+
+
+def test_hand_spawns_on_locked_access_tile_and_can_leave_but_not_reenter():
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["HIRE"]]))
+    assert obs["farms"][0]["hands"] == [[5, 4]]  # NE shed-access tile, still LOCKED
+    assert obs["farms"][0]["tiles"][4][5] == "LOCKED"
+    obs = _p0(env, _farmer(env, hands=[["EAST"]]))  # deeper into locked land: no-op
+    assert obs["farms"][0]["hands"] == [[5, 4]]
+    obs = _p0(env, _farmer(env, hands=[["WEST"]]))  # leaving a locked tile works
+    assert obs["farms"][0]["hands"] == [[4, 4]]
+    obs = _p0(env, _farmer(env, hands=[["EAST"]]))  # cannot re-enter
+    assert obs["farms"][0]["hands"] == [[4, 4]]
+
+
+def test_shed_actions_are_noops_from_a_locked_access_tile():
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["BUY_PRODUCT", "WHEAT", 3], ["HIRE"]]))
+    assert obs["private"]["shed"]["WHEAT"] == 3 and obs["farms"][0]["hands"] == [[5, 4]]
+    obs = _p0(env, _farmer(env, farmer=["PICKUP", "WHEAT", 1], hands=[["PICKUP", "WHEAT", 1]]))
+    assert obs["private"]["shed"]["WHEAT"] == 2  # only the farmer on unlocked (4,4) succeeded
+    assert obs["private"]["inventories"] == [{"WHEAT": 1}, {}]
+
+
+# --- Wheat lifecycle, feed, and sale semantics used by the baseline (§8-§10, §13, §16-§17) --
+
+
+def test_wheat_seed_purchase_planting_watering_harvest_and_sale_semantics():
+    from kaggriculture_bot.constants import CROPS, LAST_DAY, TURNS_PER_DAY
+
+    assert LAST_DAY == 29 and TURNS_PER_DAY == 24
+    wheat = CROPS["WHEAT"]
+    env = _fresh_env()
+    # Fixed seed price, seeds land in private.seeds (not the shed) after the market phase.
+    obs = _p0(env, _farmer(env, market=[["BUY_SEED", "WHEAT", 2]]))
+    assert obs["private"]["seeds"]["WHEAT"] == 2
+    assert obs["farms"][0]["money"] == 3000 - 2 * wheat.seed
+    assert obs["private"]["shed"]["WHEAT"] == 0
+    # PLANT acts on the farmer's own tile, consumes one seed, and starts unwatered (=1).
+    obs = _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"]))
+    tile = obs["farms"][0]["tiles"][4][4]
+    assert tile["kind"] == "PLANT" and tile["crop"] == "WHEAT" and tile["planted_day"] == 0
+    assert tile["consecutive_unwatered"] == 1 and tile["watered_today"] is False
+    assert tile["yield_units"] == 1 and obs["private"]["seeds"]["WHEAT"] == 1
+    assert tile["max_lifespan_step"] == (0 + wheat.max_yield_day + 1) * TURNS_PER_DAY
+    # WATER on the same tile marks it watered; a second WATER is a no-op.
+    obs = _p0(env, _farmer(env, farmer=["WATER"]))
+    assert obs["farms"][0]["tiles"][4][4]["watered_today"] is True
+    # HARVEST before first_yield_day is a no-op even with yield_units > 0.
+    obs = _p0(env, _farmer(env, farmer=["HARVEST"]))
+    assert obs["farms"][0]["tiles"][4][4]["kind"] == "PLANT"
+    assert obs["private"]["inventories"][0] == {}
+    # Advance to the start of day 1 (steps 3..23 pass); watered plant survives and resets.
+    while env.state[0].observation["day"] == 0:
+        obs = _p0(env, PASS_ACTION)
+    tile = obs["farms"][0]["tiles"][4][4]
+    assert obs["day"] == 1 and tile["consecutive_unwatered"] == 0 and tile["watered_today"] is False
+    # Water once per day through max_yield_day; bonus window starts at ceil(max/2).
+    yields = {}
+    for day in range(1, wheat.max_yield_day + 1):
+        obs = _p0(env, _farmer(env, farmer=["WATER"]))
+        yields[day] = obs["farms"][0]["tiles"][4][4]["yield_units"]
+        while env.state[0].observation["day"] == day:
+            obs = _p0(env, PASS_ACTION)
+    assert yields == {1: 1, 2: 2, 3: 3, 4: 4}  # +1 per watered day in the bonus window
+    # Harvest after max_yield_day: units go to the farmer's carried inventory, tile empties.
+    assert obs["day"] == wheat.max_yield_day + 1
+    obs = _p0(env, _farmer(env, farmer=["HARVEST"]))
+    assert obs["farms"][0]["tiles"][4][4] is None
+    assert obs["private"]["inventories"][0] == {"WHEAT": 4}
+    # SELL only sells from the shed: carried wheat is not sold.
+    money_before = obs["farms"][0]["money"]
+    obs = _p0(env, _farmer(env, market=[["SELL", "WHEAT", 4]]))
+    assert obs["farms"][0]["money"] == money_before
+    assert obs["private"]["inventories"][0] == {"WHEAT": 4}
+    # DROP (shed-adjacent) then SELL in the same turn works: unit actions precede the market.
+    obs = _p0(env, _farmer(env, farmer=["DROP"], market=[["SELL", "WHEAT", 4]]))
+    assert obs["private"]["inventories"][0] == {} and obs["private"]["shed"]["WHEAT"] == 0
+    assert obs["farms"][0]["money"] > money_before
+
+
+def test_unwatered_new_planting_dies_at_first_refresh_and_second_miss_kills_older_plant():
+    env = _fresh_env()
+    _p0(env, _farmer(env, market=[["BUY_SEED", "WHEAT", 2]]))
+    _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"]))  # step 1 on (4,4), never watered
+    _p0(env, _farmer(env, farmer=["WEST"]))
+    _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"]))  # step 3 on (3,4)
+    obs = _p0(env, _farmer(env, farmer=["WATER"]))  # (3,4) watered on planting day
+    while env.state[0].observation["day"] == 0:
+        obs = _p0(env, PASS_ACTION)
+    assert obs["farms"][0]["tiles"][4][4] == {"kind": "WEED"}  # planting day counted as miss #1
+    survivor = obs["farms"][0]["tiles"][4][3]
+    assert survivor["kind"] == "PLANT" and survivor["consecutive_unwatered"] == 0
+    # Miss day 1 -> consecutive_unwatered == 1 (at risk); miss day 2 -> weed.
+    while env.state[0].observation["day"] == 1:
+        obs = _p0(env, PASS_ACTION)
+    assert obs["farms"][0]["tiles"][4][3]["consecutive_unwatered"] == 1
+    while env.state[0].observation["day"] == 2:
+        obs = _p0(env, PASS_ACTION)
+    assert obs["farms"][0]["tiles"][4][3] == {"kind": "WEED"}
+
+
+def test_feed_requires_carried_wheat_and_two_missed_feeds_cause_escape():
+    env = _fresh_env()
+    _p0(env, _farmer(env, market=[["BUY_ANIMAL", "GOOSE", 1], ["BUY_PRODUCT", "WHEAT", 2]]))
+    _p0(env, _farmer(env, farmer=["PICKUP", "GOOSE", 1]))
+    _p0(env, _farmer(env, farmer=["NORTH"]))  # (4,3)
+    _p0(env, _farmer(env, farmer=["BUILD_COOP"]))
+    obs = _p0(env, _farmer(env, farmer=["PLACE", "GOOSE"]))
+    goose = obs["farms"][0]["tiles"][3][4]
+    assert goose["animal"] == "GOOSE" and goose["consecutive_unfed"] == 0
+    # FEED without carried wheat is a no-op (wheat is in the shed, not carried).
+    obs = _p0(env, _farmer(env, farmer=["FEED"]))
+    assert obs["farms"][0]["tiles"][3][4]["fed_today"] is False
+    while env.state[0].observation["day"] == 0:
+        obs = _p0(env, PASS_ACTION)
+    goose = obs["farms"][0]["tiles"][3][4]
+    assert goose["consecutive_unfed"] == 1 and "animal" in goose  # one miss: at risk, still here
+    # Fetch wheat (farmer respawned on (4,4), shed-adjacent), walk back and FEED.
+    _p0(env, _farmer(env, farmer=["PICKUP", "WHEAT", 1]))
+    _p0(env, _farmer(env, farmer=["NORTH"]))
+    obs = _p0(env, _farmer(env, farmer=["FEED"]))
+    assert obs["farms"][0]["tiles"][3][4]["fed_today"] is True
+    assert obs["private"]["inventories"][0] == {}
+    while env.state[0].observation["day"] == 1:
+        obs = _p0(env, PASS_ACTION)
+    assert obs["farms"][0]["tiles"][3][4]["consecutive_unfed"] == 0  # fed: counter reset
+    # Two consecutive missed days -> the animal escapes and the empty coop remains.
+    while env.state[0].observation["day"] in (2, 3):
+        obs = _p0(env, PASS_ACTION)
+    assert obs["farms"][0]["tiles"][3][4] == {"kind": "COOP"}
+
+
+def test_crop_constants_match_installed_environment():
+    from kaggle_environments.envs.kaggriculture.kaggriculture import CROPS as OFFICIAL_CROPS
+
+    from kaggriculture_bot.constants import CROPS
+
+    assert set(CROPS) == set(OFFICIAL_CROPS)
+    for name, official in OFFICIAL_CROPS.items():
+        ours = CROPS[name]
+        assert ours.seed == official["seed"]
+        assert ours.first_yield_day == official["first_yield_day"]
+        assert ours.max_yield_day == official["max_yield_day"]
+        assert ours.interval == official["interval"]
+        assert ours.max_yield == official["max_yield"]
+        assert ours.ongoing == official["ongoing"]
