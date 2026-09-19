@@ -87,6 +87,14 @@ def test_two_animals_never_get_jobs_on_the_same_structure_tile(obs_no_hands):
     coop = Objective(ObjectiveKind.BUILD_STRUCTURE, (P(4, 4),), "COOP")
     pasture = Objective(ObjectiveKind.BUILD_STRUCTURE, (P(4, 4),), "PASTURE")
     assert [j.item for j in generate_jobs(state, plan(coop, pasture))] == ["COOP"]
+    wheat = Objective(ObjectiveKind.PLANT, (P(4, 4), P(4, 3)), "WHEAT", None, 22)
+    carrot = Objective(ObjectiveKind.PLANT, (P(4, 4), P(3, 4)), "CARROT", None, 22)
+    jobs = generate_jobs(state, plan(wheat, carrot))
+    assert [(j.item, j.target) for j in jobs] == [
+        ("WHEAT", P(4, 4)),
+        ("WHEAT", P(4, 3)),
+        ("CARROT", P(3, 4)),
+    ]
 
 
 def test_deliver_creates_one_pinned_job_per_carrying_unit(obs_two_hands):

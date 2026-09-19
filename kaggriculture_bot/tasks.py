@@ -67,7 +67,8 @@ _ON_TILE_OPS = {
     JobKind.DELIVER: UnitOp.DROP,
 }
 _BUILD_OPS = {"COOP": UnitOp.BUILD_COOP, "PASTURE": UnitOp.BUILD_PASTURE}
-_ONE_PER_TILE = {JobKind.PLACE, JobKind.BUILD}
+# Single-use tile work: at most one job per tile per turn whatever the item.
+_ONE_PER_TILE = {JobKind.PLACE, JobKind.BUILD, JobKind.PLANT}
 
 
 # --- Job generation ------------------------------------------------------------------------------
@@ -105,8 +106,9 @@ def generate_jobs(state: GameState, plan: StrategicPlan) -> list[Job]:
                 deadline_hour=objective.deadline_hour,
                 requires=requires,
             )
-            # One structure per tile: a second animal wanting the same empty
-            # structure (or the same empty tile to build on) waits its turn.
+            # One structure/planting per tile: a second animal or crop wanting
+            # the same tile waits its turn (the strategy allocates tiles
+            # exclusively; this guards the invariant at the job level).
             tile_key = (kind.value, target.x, target.y) if kind in _ONE_PER_TILE else None
             if job.key in seen or tile_key in seen:
                 continue

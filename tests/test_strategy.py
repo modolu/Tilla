@@ -343,7 +343,61 @@ def test_held_seeds_of_an_unviable_crop_are_left_unplanted(obs_no_hands):
     assert not (plan.objective.kind is ObjectiveKind.PLANT and plan.objective.item == "MELON")
 
 
+def test_one_feed_purchase_covers_every_mouth_today(obs_no_hands):
+    """At-risk and routine animals share one wheat order sized to the total shortfall."""
+    state = make_state(
+        obs_no_hands,
+        day=3,
+        hour=2,
+        tiles={
+            (1, 1): raw_animal(consecutive_unfed=1),
+            (2, 2): raw_animal(consecutive_unfed=0),
+            (3, 3): raw_animal(consecutive_unfed=0),
+        },
+        shed={"WHEAT": 1},
+    )
+    buys = [o for o in plan_for(state).market if o.op is MarketOp.BUY_PRODUCT]
+    assert buys == [MarketOrder(MarketOp.BUY_PRODUCT, "WHEAT", 2)]
+
+
+def test_routine_feed_is_bought_from_the_reserve(obs_no_hands):
+    """Feeding existing animals is mandatory care: cash sitting on the hard
+    floor still buys today's wheat, but never below zero."""
+    state = make_state(
+        obs_no_hands,
+        day=3,
+        hour=2,
+        tiles={(1, 1): raw_animal(consecutive_unfed=0), (2, 2): raw_animal(consecutive_unfed=0)},
+        money=EARLY_MIN_CASH_RESERVE,
+    )
+    assert MarketOrder(MarketOp.BUY_PRODUCT, "WHEAT", 2) in plan_for(state).market
+    broke = make_state(
+        obs_no_hands, day=3, hour=2, tiles={(1, 1): raw_animal(consecutive_unfed=0)}, money=5
+    )
+    assert not [o for o in plan_for(broke).market if o.op is MarketOp.BUY_PRODUCT]
+
+
 # --- Started work is completed before new investment ------------------------------------
+
+
+def test_objectives_never_claim_one_tile_twice(obs_no_hands):
+    """Held seeds of two crops, an animal to house and an economic build all
+    get distinct tiles; the watering-capacity budget is shared across crops."""
+    state = make_state(
+        obs_no_hands, day=3, hour=4, seeds={"WHEAT": 3, "CARROT": 3}, shed={"GOOSE": 1}, money=3000
+    )
+    plan = plan_for(state)
+    tiles = [t for o in plan.all_objectives() for t in o.targets]
+    assert len(tiles) == len(set(tiles)), tiles
+    plants = [o for o in plan.all_objectives() if o.kind is ObjectiveKind.PLANT]
+    assert {o.item for o in plants} == {"CARROT", "WHEAT"}
+    assert [o for o in plan.all_objectives() if o.kind is ObjectiveKind.BUILD_STRUCTURE]
+    # Late in the day the shared watering budget caps the total, not each crop.
+    late = make_state(obs_no_hands, day=3, hour=21, seeds={"WHEAT": 3, "CARROT": 3})
+    planted = sum(
+        len(o.targets) for o in plan_for(late).all_objectives() if o.kind is ObjectiveKind.PLANT
+    )
+    assert planted == 2  # (23 - 21) turns x 1 unit
 
 
 def test_bought_animal_is_fetched_and_placed_as_daily_work(obs_no_hands):
@@ -516,6 +570,37 @@ def test_care_hands_are_paid_from_the_reserve(obs_no_hands):
     assert broke.me.money - spend >= 0
     care = [o for o in plan.all_objectives() if o.priority <= PRIORITY_DAILY_WORK]
     assert sum(len(o.targets) for o in care) == 25
+
+
+def test_market_list_keeps_feed_and_purchases_ahead_of_hires_within_the_cap(obs_no_hands):
+    """Heavy turn: eight sellable products, an at-risk animal without wheat, a
+    seed purchase and a hiring backlog. Sales, the feed purchase and the
+    economic purchase survive; hires are what the 10-order cap trims."""
+    field = {
+        (x, y): raw_plant(planted_day=2, consecutive_unwatered=0)
+        for x in range(5)
+        for y in range(4)
+    }
+    field[(1, 4)] = raw_animal(consecutive_unfed=1)
+    shed = {
+        p: 5
+        for p in ("CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
+    }
+    state = make_state(obs_no_hands, day=6, hour=0, tiles=field, shed=shed, money=2000)
+    plan = plan_for(state)
+    ops = [o.op for o in plan.market]
+    assert len(plan.market) <= MAX_MARKET_ORDERS_PER_TURN
+    assert MarketOrder(MarketOp.BUY_PRODUCT, "WHEAT", 1) in plan.market
+    assert ops.index(MarketOp.BUY_PRODUCT) > max(
+        i for i, op in enumerate(ops) if op is MarketOp.SELL
+    )
+    assert plan.hires == ops.count(MarketOp.HIRE)
+    if MarketOp.HIRE in ops:
+        assert ops.index(MarketOp.HIRE) > ops.index(MarketOp.BUY_PRODUCT)
+    # Without the sell wave the same turn hires; the trimmed hires come back next turn.
+    plain = make_state(obs_no_hands, day=6, hour=0, tiles=field, money=2000)
+    assert plan_for(plain).hires >= 1
+    assert plan_for(plain).market[-1].op is MarketOp.HIRE
 
 
 def test_hiring_stops_at_the_daily_cap(obs_two_hands):

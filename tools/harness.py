@@ -6,8 +6,9 @@ Provides:
   per-agent instrumentation for the *observed* agent: timing, validator
   fallbacks, malformed outputs, parse failures, hires, hand-action
   utilization, care losses (crops lost to missed watering, animals escaped,
-  fresh plantings that failed same-day watering), decay losses, duplicate
-  productive actions.
+  fresh plantings that failed same-day watering), decay losses, and
+  same-turn conflicts on single-use work (duplicate planner assignments,
+  duplicate emitted actions, mixed-op no-ops, redundant care actions).
 * ``hiring_disabled``: an ablation wrapper that runs the same agent but
   removes only ``HIRE`` market orders (Milestone 4 control).
 * ``paired``: seat-swapped paired games over a seed range.
@@ -29,11 +30,35 @@ from collections import Counter
 from collections.abc import Callable
 
 from kaggriculture_bot.parser import parse_observation
+from kaggriculture_bot.runtime import _MEMORIES
 from kaggriculture_bot.validator import validate_or_fallback
 
 PASS_ACTION = {"farmer": ["PASS"], "hands": [], "market": []}
 MOVE_OPS = {"NORTH", "SOUTH", "EAST", "WEST"}
 LOGISTIC_OPS = {"PICKUP", "DROP"}
+# Unit ops that consume a single-use resource on their tile: a second one on
+# the same tile in the same turn can only be an environment no-op.
+SINGLE_USE_OPS = {
+    "WATER",
+    "HARVEST",
+    "FEED",
+    "COLLECT_FERTILIZER",
+    "FERTILIZE",
+    "BUILD_COOP",
+    "BUILD_PASTURE",
+    "PLACE",
+    "PLANT",
+}
+# Job kinds that are single-use on their target tile (mirrors SINGLE_USE_OPS).
+SINGLE_USE_JOBS = {"WATER", "HARVEST", "FEED", "COLLECT", "FERTILIZE", "BUILD", "PLACE", "PLANT"}
+# Ops that turn an empty tile into something: two different ones on one tile
+# in one turn means the later is a no-op.
+TILE_CLAIM_OPS = {"PLANT", "BUILD_COOP", "BUILD_PASTURE"}
+# Care ops that are only meaningful once per tile per day.
+ONCE_PER_DAY_OPS = {"WATER", "FEED", "COLLECT_FERTILIZER"}
+CARE_OPS = {"WATER", "FEED"}
+HARVEST_OPS = {"HARVEST", "COLLECT_FERTILIZER"}
+PRODUCTION_OPS = {"PLANT", "BUILD_COOP", "BUILD_PASTURE", "PLACE", "FERTILIZE"}
 
 
 def hiring_disabled(agent: Callable) -> Callable:
@@ -81,6 +106,88 @@ def _care_losses(steps, seat: int) -> dict[str, int]:
     return dict(losses)
 
 
+def _duplicate_checks(obs, units, acts, same_day_repeats: Counter) -> list[dict]:
+    """Classify same-turn conflicts on single-use work for the observed agent.
+
+    * ``duplicate_single_use_assignment``: two of our units hold planner jobs
+      of a single-use kind on the same tile (read from the runtime memory the
+      agent just wrote; only Tilla populates it).
+    * ``duplicate_single_use_action``: two units emitted the same single-use
+      op on the same tile this turn (the later one is an environment no-op).
+    * ``same_turn_noop``: two units emitted different tile-claiming ops on
+      one empty tile this turn (e.g. PLANT and BUILD_COOP): the later is a
+      no-op.
+    * ``redundant_care_action``: a once-per-day care op emitted on a tile the
+      observation already shows as done today (watered / fed / fertilizer
+      collected): an environment no-op, i.e. a wasted unit action.
+    """
+    events: list[dict] = []
+    base = {"step": obs["step"], "day": obs["day"], "hour": obs["hour"]}
+    farm = obs["farms"][obs["player"]]
+    memory = _MEMORIES.get(obs["player"])
+    if memory is not None and memory.assignment_day == obs["day"]:
+        by_resource: dict[tuple, list[tuple[int, str]]] = {}
+        for idx, job in memory.unit_assignments.items():
+            if job.kind.value in SINGLE_USE_JOBS:
+                resource = (job.kind.value, job.target.x, job.target.y)
+                by_resource.setdefault(resource, []).append((idx, str(job.key)))
+        for resource, holders in by_resource.items():
+            if len(holders) > 1:
+                events.append(
+                    {
+                        **base,
+                        "kind": "duplicate_single_use_assignment",
+                        "resource": resource,
+                        "jobs": holders,
+                    }
+                )
+    seen_same: dict[tuple, int] = {}
+    seen_tile: dict[tuple, tuple[int, str]] = {}
+    for idx, (pos, act) in enumerate(zip(units, acts, strict=False)):
+        op = act[0] if act else "PASS"
+        if op not in SINGLE_USE_OPS:
+            continue
+        tile = tuple(pos)
+        if (tile, op) in seen_same:
+            events.append(
+                {
+                    **base,
+                    "kind": "duplicate_single_use_action",
+                    "tile": tile,
+                    "units": [seen_same[(tile, op)], idx],
+                    "op": op,
+                }
+            )
+        elif tile in seen_tile and op in TILE_CLAIM_OPS and seen_tile[tile][1] in TILE_CLAIM_OPS:
+            events.append(
+                {
+                    **base,
+                    "kind": "same_turn_noop",
+                    "tile": tile,
+                    "units": [seen_tile[tile][0], idx],
+                    "ops": [seen_tile[tile][1], op],
+                }
+            )
+        seen_same.setdefault((tile, op), idx)
+        seen_tile.setdefault(tile, (idx, op))
+        if op in ONCE_PER_DAY_OPS and _already_done_today(farm["tiles"][tile[1]][tile[0]], op):
+            same_day_repeats[(obs["day"], tile, op)] += 1
+            events.append({**base, "kind": "redundant_care_action", "tile": tile, "op": op})
+    return events
+
+
+def _already_done_today(tile, op: str) -> bool:
+    if not isinstance(tile, dict):
+        return False
+    if op == "WATER":
+        return bool(tile.get("watered_today"))
+    if op == "FEED":
+        return "animal" in tile and bool(tile.get("fed_today"))
+    if op == "COLLECT_FERTILIZER":
+        return "animal" in tile and not tile.get("fertilizer_available", True)
+    return False
+
+
 def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bool = True) -> dict:
     """Play one official episode; ``candidate`` sits in ``seat`` (0 or 1)."""
     from kaggle_environments import make
@@ -88,12 +195,15 @@ def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bo
     stats = Counter()
     timings: list[float] = []
     hand_ops = Counter()
+    hand_work = Counter()  # CARE / HARVEST / PRODUCTION actions performed by hands
     hires_by_day: Counter = Counter()
     hire_spend = 0
-    duplicate_actions = 0
+    duplicates = Counter()  # see _duplicate_checks
+    duplicate_events: list[dict] = []
+    same_day_repeats: Counter = Counter()  # (day, tile, op) -> redundant emissions
 
     def observed(obs):
-        nonlocal hire_spend, duplicate_actions
+        nonlocal hire_spend
         t0 = time.perf_counter()
         action = candidate(obs)
         timings.append((time.perf_counter() - t0) * 1000)
@@ -127,17 +237,18 @@ def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bo
                     if op in LOGISTIC_OPS
                     else "PRODUCTIVE"
                 ] += 1
+                if op in CARE_OPS:
+                    hand_work["CARE"] += 1
+                elif op in HARVEST_OPS:
+                    hand_work["HARVEST"] += 1
+                elif op in PRODUCTION_OPS:
+                    hand_work["PRODUCTION"] += 1
             units = [farm["farmer"], *farm["hands"]]
             acts = [action["farmer"], *action.get("hands", [])]
-            seen = set()
-            for pos, act in zip(units, acts, strict=False):
-                op = act[0] if act else "PASS"
-                if op in MOVE_OPS or op in ("PASS", "PICKUP", "DROP"):
-                    continue
-                key = (tuple(pos), op)
-                if key in seen:
-                    duplicate_actions += 1
-                seen.add(key)
+            for event in _duplicate_checks(obs, units, acts, same_day_repeats):
+                duplicates[event["kind"]] += 1
+                if len(duplicate_events) < 200:
+                    duplicate_events.append(event)
         return action
 
     agents = [observed, opponent] if seat == 0 else [opponent, observed]
@@ -169,7 +280,12 @@ def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bo
         "hire_spend": hire_spend,
         "hand_actions": dict(hand_ops),
         "hand_pass_rate": (hand_ops["PASS"] / total_hand) if total_hand else 0.0,
-        "duplicate_productive_actions": duplicate_actions,
+        "hand_work": dict(hand_work),
+        "duplicate_single_use_assignments": duplicates["duplicate_single_use_assignment"],
+        "duplicate_single_use_actions": duplicates["duplicate_single_use_action"],
+        "same_turn_noops": duplicates["same_turn_noop"],
+        "redundant_care_actions": duplicates["redundant_care_action"],
+        "duplicate_events": duplicate_events,
         **_care_losses(env.steps, seat),
         "opponent_care_losses": _care_losses(env.steps, 1 - seat),
     }
@@ -220,7 +336,13 @@ def summarize(results: list[dict]) -> dict:
         "opponent_care_losses": dict(
             sum((Counter(r["opponent_care_losses"]) for r in results), Counter())
         ),
-        "duplicate_productive_actions": sum(r["duplicate_productive_actions"] for r in results),
+        "hand_work": dict(sum((Counter(r["hand_work"]) for r in results), Counter())),
+        "duplicate_single_use_assignments": sum(
+            r["duplicate_single_use_assignments"] for r in results
+        ),
+        "duplicate_single_use_actions": sum(r["duplicate_single_use_actions"] for r in results),
+        "same_turn_noops": sum(r["same_turn_noops"] for r in results),
+        "redundant_care_actions": sum(r["redundant_care_actions"] for r in results),
         "crashes": sum(r["ERROR"] + r["INVALID"] for r in results),
         "timeouts": sum(r["TIMEOUT"] for r in results),
         "malformed": sum(r["malformed"] for r in results),

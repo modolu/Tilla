@@ -205,7 +205,7 @@ Until calibrated, never intentionally reduce bank below:
 
 Exceptions are allowed only for an immediately realized positive-cash action in the same turn.
 
-The reserve gates discretionary spending. Mandatory care of existing assets is what it is kept for, so survival feed purchases (§5) and the hands the care backlog still needs (§12) are paid from it, never below zero.
+The reserve gates discretionary spending. Mandatory care of existing assets is what it is kept for, so the wheat today's feeding still lacks (§5) and the hands the care backlog still needs (§12) are paid from it, never below zero.
 
 Affordability is not profitability.
 
@@ -492,7 +492,7 @@ The hiring policy (`strategy.hiring_decision` → `economy.hiring_plan`) instant
 | Market order layout | sells, survival purchases, economic purchases, then hires; truncated to the official 10-order cap | Which orders survive the cap | Sales fund purchases; a dropped hire is the cheapest loss |
 | `PROMOTION_SLACK_TURNS` | 1 turn | A job that must start within this many turns to finish today is scheduled ahead of routine work when the other units can still cover that work | Otherwise routine care absorbs every unit until far economic work is unreachable and the workforce idles late in the day |
 
-Assignment itself is not a policy parameter: jobs are staffed tier by tier (survival, daily work, delivery, economic, idle), cheapest feasible unit–job pair first including any shed detour for a required item, ties by job order then unit index; a unit keeps its job across turns (movement-to-task persistence) unless a higher tier needs it or the job disappears.
+Assignment itself is not a policy parameter: jobs are staffed tier by tier (survival, daily work, delivery, economic, idle), cheapest feasible unit–job pair first including any shed detour for a required item, ties by job order then unit index; a unit keeps its job across turns (movement-to-task persistence) unless a higher tier needs it or the job disappears. Within one turn every objective claims its tiles exclusively (one planting, build or placement per tile, and the same-day watering budget is shared across crops), so single-use work is never given to two units.
 
 ---
 
