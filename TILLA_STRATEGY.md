@@ -478,12 +478,12 @@ Do not buy products merely to move price unless simulation proves net positive. 
 
 Town shops are shared public information.
 
-Each unlocked shop stays active; duplicates matter.
+Each unlocked shop stays active for the rest of the season. Shops unlock without replacement from the not-yet-unlocked pool (verified, `TILLA_RULES.md` §19), so in the default pinned environment each shop type appears at most once; expected demand still accounts independently for every currently unlocked shop.
 
 Maintain an expected demand rate by product from:
 
 - town center;
-- each active shop instance;
+- each currently unlocked shop;
 - 2× consumption for single-product shops.
 
 Use demand as a pressure term in future market inventory estimates.
