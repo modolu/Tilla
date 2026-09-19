@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tilla"
+version = "0.0.0"
+description = "Tilla: deterministic Kaggriculture competition agent (submitted runtime is stdlib-only)."
+requires-python = ">=3.11"
+# The submitted runtime (main.py + kaggriculture_bot/) has no runtime dependencies.
+dependencies = []
+
+[project.optional-dependencies]
+# Development/local-environment tooling only. Never imported by the submitted runtime.
+dev = [
+    "kaggle-environments==1.30.2",
+    "pytest==9.*",
+    "ruff==0.16.*",
+]
+
+[tool.setuptools]
+packages = ["kaggriculture_bot"]
+py-modules = ["main"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Source-of-truth Markdown documents are never reformatted by tooling.
+extend-exclude = [".venv", "benchmarks/results", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

@@ -1,0 +1,18 @@
+# Local virtualenv and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated benchmark reports and packaged artifacts
+benchmarks/results/*
+*.tar.gz
+
+# Never commit credentials
+.env
+kaggle.json
+!benchmarks/results/.gitkeep
