@@ -245,6 +245,38 @@ Never compare:
 - base market price alone;
 - nominal maximum yield alone.
 
+### Initial Milestone 3 economic parameters
+
+The economic model (`economy.py`) instantiates the equation above with the parameters below. They are **initial, benchmark-tunable strategy choices made by Tilla, not game rules**; none is claimed optimal. Values live once in `constants.py` and change only with benchmark evidence recorded in §21.
+
+Mechanics-derived inputs are not listed here: crop/animal tables, land prices, shed capacity, product list, season length, turn count, first-yield/bonus-window/yield-cap timing and fertilizer duration come from `TILLA_RULES.md` and are verified by conformance tests.
+
+| Parameter | Value | Controls | Why it exists |
+|---|---:|---|---|
+| `LABOR_COST_PER_ACTION` (idle floor) | 3.0 coins | Minimum charge per unit action (incl. travel steps) | Actions are never free even when the farmer is idle |
+| Labor-price scaling (`economy.labor_price`) | linear in utilization | Marginal action value rises from the floor to the best feasible crop's gross value per action as committed daily actions approach the budget | A saturated farmer must price actions at what they could earn; keeps labor-heavy options from crowding out better per-action uses |
+| `FARMER_DAILY_ACTION_BUDGET` | 20.0 actions/day | Amortized daily care the single farmer will commit to; an opportunity whose amortized daily actions exceed the remaining budget gets realization 0 | 24 turns/day minus slack for shed trips and the daily feed purchase turn |
+| `PLANT_DAILY_ACTIONS` / `ANIMAL_DAILY_ACTIONS` | 2.0 / 3.0 | Daily actions charged for each existing plant / animal when computing utilization | Water+move; feed+collect+amortized harvest with batched travel |
+| `LAND_SCARCITY_FREE_TILES` | 8 tiles | Land cost is zero while at least this many empty unlocked tiles remain, then rises linearly to full at zero | Tiles are only scarce when the field is nearly full; no land purchases are made in v1 |
+| `LAND_TILE_DAY_VALUE` | 18.0 coins/tile-day | Land opportunity cost per occupied tile-day at full scarcity | Roughly one wheat cycle's net value per tile-day |
+| `EXECUTION_RISK_PER_DAY` | 0.5 coins/day of occupancy | Execution-risk penalty | Longer exposure to weed/care/timing failure |
+| `MARKET_GLUT_PENALTY` | 0.0 | Market-glut term | Neutral until the market model (Milestone 5) exists |
+| `PHASE_WEIGHT` | 1.0 | Phase term | Neutral until the phase engine (Milestone 7) exists |
+| Realization probability | 1.0 or 0.0 | Binary: 0 when the season, an empty tile or the labor budget makes the opportunity mechanically unrealizable, else 1 | Explainable; no learned or random probabilities |
+| Last harvest day (`economy.LAST_HARVEST_DAY`) | day 28 | Production counted only if harvestable by day 28, leaving a day to deliver and sell | Conservative terminal-horizon guard |
+| Animal setup slack | placement assumed next day when `hour >= 20` | Shifts the production schedule when the build→buy→fetch→place chain cannot finish today | Avoids counting a production event that setup cannot reach |
+| `FERTILIZER_BYPRODUCT_REALIZATION` | 0.5 | Share of an animal's daily fertilizer unit assumed collected and sold, net of collection labor | Conservative expected value; the game rule is one unit per surviving animal per day, collection is our labor choice |
+| Feed input cost | current wheat sell price × remaining days | Animal feed obligation in the estimate | Own wheat has the same opportunity value as bought wheat |
+| `FEED_WHEAT_RESERVE_PER_ANIMAL` | 2 units | Shed wheat never sold while an animal exists (0 on the final day) | Today's and tomorrow's known feed obligation |
+| Animal harvest threshold | `yield_units >= max_held - 1`, or any product from day 28 | When a trip to harvest animal product is worth taking | The next production would hit the tile cap and be lost; collect everything before the end |
+| One-time crop harvest | at the yield cap, at `max_yield_day` once watered, or immediately when decaying | When a crop is harvested | No further watering adds yield after the cap |
+| `RESERVE_EMERGENCY_BUFFER` | 50 coins | Emergency market buffer term of the dynamic reserve | Small cushion for unplanned feed/seed purchases |
+| `RESERVE_HAND_BUDGET` | 0 coins | Cheap-hand budget term of the dynamic reserve | Placeholder until hiring is part of policy (Milestone 4) |
+| Execution cutoff | `score > 0` and realization `> 0` and `money - setup_cash >= reserve` | Which ranked opportunity may be executed | Only positive, realizable, reserve-respecting investments |
+| Planting slots per turn | `remaining labor capacity // amortized daily actions` (≥ 1), capped by empty tiles and affordable seed | How many seeds are bought / tiles targeted at once | Do not stockpile beyond what labor can service |
+
+Survival and care remain above all of this: economics only chooses among opportunities after tier 1–4 work is satisfied.
+
 ---
 
 ## 8. Crop policy
@@ -645,6 +677,8 @@ HARVEST_MIN_CASH_RESERVE = 200
 SHED_PRESSURE_START = 85
 SHED_EMERGENCY = 95
 ```
+
+Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters".
 
 Do not scatter these values through strategy code. Define them once in `constants.py` and document changes here with benchmark evidence.
 

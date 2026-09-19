@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from kaggriculture_bot.constants import (
+    ANIMAL_DAILY_ACTIONS,
     ANIMALS,
     CROPS,
     EXECUTION_RISK_PER_DAY,
@@ -35,6 +36,7 @@ from kaggriculture_bot.constants import (
     LIQUIDATE_START_DAY,
     MARKET_GLUT_PENALTY,
     PHASE_WEIGHT,
+    PLANT_DAILY_ACTIONS,
     PRODUCTS,
     RESERVE_EMERGENCY_BUFFER,
     RESERVE_HAND_BUDGET,
@@ -65,10 +67,6 @@ from kaggriculture_bot.models import (
 
 # The last day on which a harvest still leaves time to deliver and sell.
 LAST_HARVEST_DAY = LAST_DAY - 1
-
-# Amortized daily care actions charged for assets already on the farm.
-PLANT_DAILY_ACTIONS = 2.0  # WATER + one travel step
-ANIMAL_DAILY_ACTIONS = 3.0  # FEED + COLLECT_FERTILIZER + amortized HARVEST/travel (batched)
 
 
 def current_price(state: GameState, product: str) -> int:
@@ -358,8 +356,12 @@ def fertilizer_incremental_units(spec: CropSpec, plant: PlantTile, day: int) -> 
     active_ages = [age, age + 1, age + 2]
     if spec.ongoing:
         production_ages = {spec.first_yield_day + k * spec.interval for k in range(spec.max_yield)}
+        # Production days still covered by an earlier application are not incremental.
         return sum(
-            1 for a in active_ages if a in production_ages and day + (a - age) <= LAST_HARVEST_DAY
+            1
+            for a in active_ages
+            if a in production_ages
+            and plant.fertilized_until_day < day + (a - age) <= LAST_HARVEST_DAY
         )
     start = bonus_window_start(spec)
     harvest_age = min(spec.max_yield_day, LAST_HARVEST_DAY - day + age)

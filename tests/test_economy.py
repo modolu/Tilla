@@ -425,3 +425,20 @@ def test_no_future_model_leakage(obs_no_hands):
     altered = make_state(obs, day=1, hour=0)
     assert economy.rank_opportunities(altered) == economy.rank_opportunities(base)
     assert economy.cash_reserve(altered) == economy.cash_reserve(base)
+
+
+def test_fertilizer_does_not_double_count_days_already_covered(obs_no_hands):
+    """An ongoing crop fertilized on day 8 (covering days 8-10) gains only the
+    uncovered production day when re-fertilized on day 9."""
+    tomato = raw_plant(crop="TOMATO", planted_day=0, watered_today=True, consecutive_unwatered=0)
+    tomato["fertilized_until_day"] = 10
+    state = make_state(obs_no_hands, day=9, hour=0, tiles={(4, 3): tomato})
+    est = economy.estimate_fertilize(state, P(4, 3), state.me.tiles[3][4])
+    assert est.expected_units == 1  # only age 11 (day 11) is incremental
+    tomato["fertilized_until_day"] = 11
+    state = make_state(obs_no_hands, day=9, hour=0, tiles={(4, 3): tomato})
+    est = economy.estimate_fertilize(state, P(4, 3), state.me.tiles[3][4])
+    assert est.expected_units == 0 and est.realization_probability == 0.0
+    tomato["fertilized_until_day"] = -1
+    state = make_state(obs_no_hands, day=9, hour=0, tiles={(4, 3): tomato})
+    assert economy.estimate_fertilize(state, P(4, 3), state.me.tiles[3][4]).expected_units == 3

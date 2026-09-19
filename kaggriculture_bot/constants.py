@@ -101,6 +101,10 @@ LABOR_COST_PER_ACTION = 3.0
 # push commitments past this budget are not realizable yet.
 FARMER_DAILY_ACTION_BUDGET = 20.0
 
+# Amortized daily care charged for assets already on the farm.
+PLANT_DAILY_ACTIONS = 2.0  # WATER + one travel step
+ANIMAL_DAILY_ACTIONS = 3.0  # FEED + COLLECT_FERTILIZER + amortized HARVEST/travel (batched)
+
 # Land opportunity cost: value of one tile-day when tiles are scarce, scaled by
 # scarcity (zero while at least LAND_SCARCITY_FREE_TILES empty tiles remain).
 LAND_TILE_DAY_VALUE = 18.0
