@@ -250,8 +250,13 @@ class ObjectiveKind(StrEnum):
     WATER_CROP = "WATER_CROP"  # WATER on a target plant tile
     FEED_ANIMAL = "FEED_ANIMAL"  # FEED on a target animal tile (wheat must be carried)
     FETCH_FEED = "FETCH_FEED"  # PICKUP item/quantity at a shed access tile
+    FETCH_ITEM = "FETCH_ITEM"  # PICKUP any item/quantity at a shed access tile
     HARVEST = "HARVEST"  # HARVEST on a target tile
+    COLLECT_FERTILIZER = "COLLECT_FERTILIZER"  # COLLECT_FERTILIZER on a target animal tile
     PLANT = "PLANT"  # PLANT item on a target empty tile, only until deadline_hour
+    BUILD_STRUCTURE = "BUILD_STRUCTURE"  # BUILD_COOP / BUILD_PASTURE (item) on an empty tile
+    PLACE_ANIMAL = "PLACE_ANIMAL"  # PLACE item on a matching empty structure
+    FERTILIZE_CROP = "FERTILIZE_CROP"  # FERTILIZE on a target plant (fertilizer carried)
     DELIVER = "DELIVER"  # DROP carried inventory at a shed access tile
     REPOSITION = "REPOSITION"  # move toward a target, no on-tile action
     PASS = "PASS"
@@ -271,13 +276,58 @@ class Objective:
 
 @dataclass(frozen=True)
 class StrategicPlan:
-    """One turn's strategic decision: the unit objective plus market orders."""
+    """One turn's strategic decision: the unit objective plus market orders.
+
+    ``equal_priority`` lists further objectives of the same priority as
+    ``objective`` (all mandatory today, none urgent); the task layer executes
+    whichever has the nearest target so one tour services nearby tiles.
+    """
 
     objective: Objective
     market: tuple[MarketOrder, ...] = ()
+    equal_priority: tuple[Objective, ...] = ()
 
 
 PASS_OBJECTIVE = Objective(ObjectiveKind.PASS)
+
+
+# --- Economic value objects (Milestone 3) --------------------------------------------------
+
+
+class OpportunityKind(StrEnum):
+    CROP = "CROP"  # plant one tile of `product`
+    ANIMAL = "ANIMAL"  # build structure, buy and place one `product`
+    FERTILIZE = "FERTILIZE"  # fertilize the existing plant at `target`
+
+
+@dataclass(frozen=True)
+class OpportunityEstimate:
+    """One scored opportunity (TILLA_STRATEGY.md §7). Monetary fields are
+    estimates in coins (float); ``setup_cash`` is the integer cash outlay still
+    required (0 when seeds/animal are already held)."""
+
+    kind: OpportunityKind
+    product: str
+    setup_cost: float
+    setup_cash: int
+    input_cost: float
+    expected_revenue: float
+    byproduct_value: float
+    labor_cost: float
+    land_cost: float
+    market_penalty: float
+    execution_risk: float
+    expected_net_value: float
+    turns_to_realize: int
+    realization_probability: float
+    phase_weight: float
+    score: float
+    actions_required: float
+    daily_actions: float
+    occupancy_days: int
+    expected_units: float
+    target: Position | None = None  # FERTILIZE: the plant tile
+    reason: str = ""  # why realization is zero, for diagnostics
 
 
 @dataclass

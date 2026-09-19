@@ -356,3 +356,83 @@ def test_crop_constants_match_installed_environment():
         assert ours.interval == official["interval"]
         assert ours.max_yield == official["max_yield"]
         assert ours.ongoing == official["ongoing"]
+
+
+# --- Milestone 3: constants and mechanics the economic model interprets ------------------------
+
+
+def test_animal_land_shed_and_product_constants_match_installed_environment():
+    from kaggle_environments.envs.kaggriculture import kaggriculture as official
+
+    from kaggriculture_bot.constants import ANIMALS, LAND_PRICES, PRODUCTS, SHED_CAPACITY
+
+    assert set(ANIMALS) == set(official.ANIMALS)
+    for name, spec in ANIMALS.items():
+        theirs = official.ANIMALS[name]
+        assert (spec.cost, spec.structure, spec.first_yield_day) == (
+            theirs["cost"],
+            theirs["structure"],
+            theirs["first_yield_day"],
+        )
+        assert (spec.interval, spec.max_held, spec.product) == (
+            theirs["interval"],
+            theirs["max_held"],
+            theirs["product"],
+        )
+    assert list(LAND_PRICES) == official.LAND_PRICES
+    assert list(PRODUCTS) == official.PRODUCTS
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 11}, debug=True)
+    assert env.configuration["shedCapacity"] == SHED_CAPACITY
+
+
+def test_fertilizer_lasts_three_days_and_doubles_the_watering_bonus():
+    env = _fresh_env()
+    _p0(env, _farmer(env, market=[["BUY_SEED", "WHEAT", 1], ["BUY_PRODUCT", "FERTILIZER", 1]]))
+    obs = env.state[0].observation
+    assert obs["private"]["shed"]["FERTILIZER"] == 1  # bought fertilizer lands in the shed
+    _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"]))
+    obs = _p0(env, _farmer(env, farmer=["WATER"]))
+    while env.state[0].observation["day"] < 2:  # reach the start of the bonus window (age 2)
+        obs = env.state[0].observation
+        obs = _p0(env, _farmer(env, farmer=["WATER"]) if obs["hour"] == 0 else PASS_ACTION)
+    assert obs["day"] == 2 and obs["private"]["inventories"][0] == {}  # carried items auto-drop
+    _p0(env, _farmer(env, farmer=["PICKUP", "FERTILIZER", 1]))
+    obs = _p0(env, _farmer(env, farmer=["FERTILIZE"]))
+    tile = obs["farms"][0]["tiles"][4][4]
+    assert tile["fertilized_until_day"] == 2 + 2 and obs["private"]["inventories"][0] == {}
+    obs = _p0(env, _farmer(env, farmer=["WATER"]))  # age 2, fertilized + watered: +2 instead of +1
+    assert obs["farms"][0]["tiles"][4][4]["yield_units"] == 3
+    obs = _p0(env, _farmer(env, farmer=["FERTILIZE"]))  # no fertilizer carried: no-op
+    assert obs["farms"][0]["tiles"][4][4]["fertilized_until_day"] == 4
+
+
+def test_animal_purchase_first_production_and_max_held_cap():
+    from kaggriculture_bot.constants import ANIMALS
+
+    goose = ANIMALS["GOOSE"]
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["BUY_ANIMAL", "GOOSE", 1], ["BUY_PRODUCT", "WHEAT", 12]]))
+    assert obs["private"]["shed"]["GOOSE"] == 1  # a bought animal lands in the shed
+    assert obs["private"]["shed"]["WHEAT"] == 12
+    assert 3000 - goose.cost - 12 * 30 < obs["farms"][0]["money"] < 3000 - goose.cost - 12 * 25
+    _p0(env, _farmer(env, farmer=["PICKUP", "GOOSE", 1]))
+    _p0(env, _farmer(env, farmer=["BUILD_COOP"]))  # on (4,4)
+    obs = _p0(env, _farmer(env, farmer=["PLACE", "GOOSE"]))
+    assert obs["farms"][0]["tiles"][4][4]["animal"] == "GOOSE"
+    # Feed every day from the shed (farmer respawns on (4,4), the coop tile, each day).
+    eggs_by_day = {}
+    while env.state[0].observation["day"] < goose.first_yield_day + goose.max_held + 2:
+        obs = env.state[0].observation
+        if obs["hour"] == 0:
+            _p0(env, _farmer(env, farmer=["PICKUP", "WHEAT", 1]))
+        elif obs["hour"] == 1:
+            obs = _p0(env, _farmer(env, farmer=["FEED"]))
+            eggs_by_day[obs["day"]] = obs["farms"][0]["tiles"][4][4]["yield_units"]
+        else:
+            _p0(env, PASS_ACTION)
+    assert eggs_by_day[goose.first_yield_day - 1] == 0
+    assert eggs_by_day[goose.first_yield_day] == 1  # first egg on placed_day + first_yield_day
+    assert (
+        eggs_by_day[goose.first_yield_day + goose.max_held] == goose.max_held
+    )  # capped, not lost twice
+    assert eggs_by_day[goose.first_yield_day + goose.max_held + 1] == goose.max_held

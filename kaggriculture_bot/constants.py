@@ -41,8 +41,34 @@ CROPS = {
     "MELON": CropSpec(80, 10, 12, 0, 6, False),
 }
 
-# Items and ops the baseline refers to by name.
+
+@dataclass(frozen=True)
+class AnimalSpec:
+    cost: int  # fixed purchase price
+    structure: str  # "COOP" or "PASTURE"
+    first_yield_day: int  # days after placement until the first production
+    interval: int  # days between productions
+    max_held: int  # unharvested product cap on the tile
+    product: str
+
+
+# Official animal table (kaggriculture.py ANIMALS, 1.30.2; TILLA_RULES.md §12).
+ANIMALS = {
+    "GOOSE": AnimalSpec(300, "COOP", 4, 1, 4, "EGG"),
+    "COW": AnimalSpec(400, "PASTURE", 8, 2, 6, "MILK"),
+    "SHEEP": AnimalSpec(500, "PASTURE", 6, 3, 6, "WOOL"),
+}
+
+# Land unlock prices in fixed order NE, SW, SE (TILLA_RULES.md §3).
+LAND_PRICES = (1000, 2000, 4000)
+
+# Non-seed shed capacity (TILLA_RULES.md §4).
+SHED_CAPACITY = 100
+
+# Items referred to by name.
 WHEAT = "WHEAT"
+FERTILIZER = "FERTILIZER"
+PRODUCTS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
 
 # --- Policy parameters (TILLA_STRATEGY.md §20; meaning documented there) ---------------
 
@@ -58,20 +84,43 @@ HARVEST_MIN_CASH_RESERVE = 200
 SHED_PRESSURE_START = 85
 SHED_EMERGENCY = 95
 
-# --- Milestone 2 baseline implementation parameters ------------------------------------
-
-# Crop the farm-care baseline cycles (TILLA_STRATEGY.md §8: wheat is the
-# short-turnaround, reliable-liquidity crop).
-BASELINE_CROP = WHEAT
-
-# Number of concurrent baseline plantings one unit can service in a day: a
-# synchronized max-yield day costs about one move + WATER + one move + HARVEST
-# per plant (~4 turns), so 6 plants fit inside the 24-turn day with margin.
-BASELINE_MAX_PLANTS = 6
+# --- Economic model parameters (Milestone 3; TILLA_STRATEGY.md §6, §7, §9, §10) ------
 
 # Wheat kept in the shed per existing animal so feed is never sold away
 # (today's and tomorrow's known feed obligation).
 FEED_WHEAT_RESERVE_PER_ANIMAL = 2
+
+# Labor opportunity cost: every unit action (including a travel step) is
+# charged the current marginal action value, which rises linearly with farmer
+# utilization from this idle floor to the best available crop's value per
+# action (economy.labor_price). Explainable, no shadow-price optimizer.
+LABOR_COST_PER_ACTION = 3.0
+
+# Amortized unit actions per day the single farmer can commit to recurring
+# care (water/feed/harvest plus a travel step each). Opportunities that would
+# push commitments past this budget are not realizable yet.
+FARMER_DAILY_ACTION_BUDGET = 20.0
+
+# Land opportunity cost: value of one tile-day when tiles are scarce, scaled by
+# scarcity (zero while at least LAND_SCARCITY_FREE_TILES empty tiles remain).
+LAND_TILE_DAY_VALUE = 18.0
+LAND_SCARCITY_FREE_TILES = 8
+
+# Execution risk: each day an opportunity stays exposed (weed/care/timing risk).
+EXECUTION_RISK_PER_DAY = 0.5
+
+# Neutral placeholders that keep the source-of-truth equation complete until
+# the market (M5) and opponent (M6) models exist.
+MARKET_GLUT_PENALTY = 0.0
+PHASE_WEIGHT = 1.0
+
+# Share of an animal's daily fertilizer byproduct assumed collected and sold.
+FERTILIZER_BYPRODUCT_REALIZATION = 0.5
+
+# Dynamic cash reserve components (TILLA_STRATEGY.md §6): hired-hand budget is a
+# documented zero until hiring is part of policy (Milestone 4).
+RESERVE_HAND_BUDGET = 0
+RESERVE_EMERGENCY_BUFFER = 50
 
 # Bound on retained opponent summaries in EpisodeMemory (implementation
 # parameter, not a game rule). Summaries themselves arrive with Milestone 6.

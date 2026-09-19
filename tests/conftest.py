@@ -119,6 +119,7 @@ def make_state(
     inventory=None,
     money=None,
     hands=None,
+    prices=None,
 ):
     """Copy a real observation, apply overrides to our own farm, and parse it.
 
@@ -149,4 +150,6 @@ def make_state(
         obs["private"]["inventories"][0] = dict(inventory)
     if money is not None:
         me["money"] = money
+    if prices is not None:
+        obs["market"]["prices"].update(prices)
     return parse_observation(obs)

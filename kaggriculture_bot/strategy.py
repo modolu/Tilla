@@ -1,45 +1,39 @@
 """Strategic objectives and plans. No raw observations, no pathfinding, no formatting.
 
-Milestone 2 farm-care baseline (TILLA_STRATEGY.md §3, §5, §8 wheat, §16):
-a single acting unit (the farmer) works through this fixed priority order and
-the task layer executes the chosen objective. Hired hands are not planned yet.
+Single acting unit (the farmer; hands are planned in Milestone 4). Priority
+order (TILLA_STRATEGY.md §3, §5, §16); economics (Milestone 3) only chooses
+among viable opportunities once every higher tier is satisfied:
 
-    1. save at-risk crops/animals (die/escape tonight without care)
+    1. survival: harvest decaying crops, feed/water assets lost tonight
     2. mandatory daily care of existing plants/animals
-    3. harvest ready output
+    3. harvest ready crops/products and collect waiting fertilizer
     4. (final day) deliver carried produce to the shed so it can be sold
-    5. plant the baseline crop (wheat) with a credible same-day watering slot
+    5. execute the best positive-score opportunity from economy.py that the
+       cash reserve allows: plant a crop, add an animal, or fertilize a plant
     6. deliver carried produce when otherwise idle
     7. PASS
 
-Market orders are free of unit time: excess shed wheat (beyond the feed
-reserve) is sold immediately, seed is bought only when a viable planting slot
-exists and the hard cash floor holds, and feed wheat is bought only to prevent
-an avoidable escape. No price forecasting, land, livestock or fertilizer.
+Market orders cost no unit time: the basic sell/hold plan sells every shed
+product without an immediate internal use (economy.sell_plan); purchases are
+made only for the executing opportunity, and feed wheat only to prevent an
+avoidable escape.
 """
 
 from __future__ import annotations
 
-from kaggriculture_bot.constants import (
-    BASELINE_CROP,
-    BASELINE_MAX_PLANTS,
-    CROPS,
-    FEED_WHEAT_RESERVE_PER_ANIMAL,
-    LAST_DAY,
-    TURNS_PER_DAY,
-    WHEAT,
-)
+from kaggriculture_bot import economy
+from kaggriculture_bot.constants import ANIMALS, CROPS, FERTILIZER, LAST_DAY, TURNS_PER_DAY, WHEAT
 from kaggriculture_bot.features import (
     animal_at_risk,
+    animal_fertilizer_ready,
     animal_harvest_ready,
     animal_needs_feed,
     animals,
     carried,
     carried_total,
-    crop_can_mature_before_end,
     distance_to_shed,
+    empty_structures,
     empty_tiles,
-    min_cash_reserve,
     plant_at_risk,
     plant_decaying,
     plant_harvest_ready,
@@ -55,13 +49,20 @@ from kaggriculture_bot.models import (
     MarketOrder,
     Objective,
     ObjectiveKind,
+    OpportunityEstimate,
+    OpportunityKind,
     Position,
     StrategicPlan,
+    TileKind,
 )
 
 # A fresh planting must still be watered before the day refresh, so the
 # on-tile PLANT may happen no later than the second-to-last hour.
 PLANT_DEADLINE_HOUR = TURNS_PER_DAY - 2
+
+
+def _by_shed_distance(farm, positions):
+    return tuple(sorted(positions, key=lambda p: (distance_to_shed(p, farm.board_size), p.y, p.x)))
 
 
 def _feed_objective(
@@ -85,55 +86,162 @@ def _feed_objective(
         qty = min(len(targets), shed_wheat)
         return Objective(ObjectiveKind.FETCH_FEED, access, WHEAT, qty), []
     qty = len(targets)
-    unit_price = state.market.prices.get(WHEAT, 0) + 1  # buy quotes use post-buy inventory
-    if farm.money >= unit_price * qty:
+    if farm.money >= economy.buy_price(state, WHEAT) * qty:
         order = MarketOrder(MarketOp.BUY_PRODUCT, WHEAT, qty)
         return Objective(ObjectiveKind.REPOSITION, access), [order]
     return None, []
 
 
-def _plant_objective(state: GameState) -> tuple[Objective, list]:
-    """Baseline wheat planting with the same-day watering and season guards."""
+# --- Started work: sunk investments to complete (TILLA_STRATEGY.md §3 tier 2, §16 item 4) ---
+
+
+def _started_work(state: GameState) -> list[Objective]:
+    """Plant seeds already held and place animals already bought. These are
+    mandatory daily work, not new investment, so they never wait for idle time."""
     farm = state.me
-    day, hour = state.day, state.hour
-    if hour > PLANT_DEADLINE_HOUR or not crop_can_mature_before_end(day, BASELINE_CROP):
-        return PASS_OBJECTIVE, []
-    slots = BASELINE_MAX_PLANTS - len(plants(farm))
-    empties = empty_tiles(farm)
-    if slots <= 0 or not empties:
-        return PASS_OBJECTIVE, []
-    empties.sort(key=lambda p: (distance_to_shed(p, farm.board_size), p.y, p.x))
-    targets = tuple(empties[:slots])
-    seeds = state.private.seeds.get(BASELINE_CROP, 0)
-    market = []
-    wanted = slots - seeds
-    if wanted > 0:
-        affordable = (farm.money - min_cash_reserve(day)) // CROPS[BASELINE_CROP].seed
-        qty = min(wanted, affordable)
-        if qty >= 1:
-            market.append(MarketOrder(MarketOp.BUY_SEED, BASELINE_CROP, qty))
+    work: list[Objective] = []
+    empties = _by_shed_distance(farm, empty_tiles(farm))
+    if state.hour <= PLANT_DEADLINE_HOUR and empties:
+        for crop, count in sorted(state.private.seeds.items()):
+            if (
+                count <= 0
+                or crop not in CROPS
+                or not economy.plan_crop(CROPS[crop], state.day).feasible
+            ):
+                continue
+            work.append(
+                Objective(ObjectiveKind.PLANT, empties[:count], crop, None, PLANT_DEADLINE_HOUR)
+            )
+    for animal in sorted(ANIMALS):
+        held = state.private.shed.get(animal, 0) >= 1 or carried(farm.farmer, animal) >= 1
+        if held:
+            est = economy.estimate_animal(state, animal)
+            objective, _ = _animal_execution(state, est, 0)
+            if objective is not None:
+                work.append(objective)
+    return work
+
+
+# --- Economic tier: execute the chosen opportunity ------------------------------------------
+
+
+def _crop_execution(
+    state: GameState, est: OpportunityEstimate, reserve: int
+) -> tuple[Objective | None, list]:
+    farm = state.me
+    if state.hour > PLANT_DEADLINE_HOUR:
+        return None, []
+    empties = _by_shed_distance(farm, empty_tiles(farm))
+    if not empties:
+        return None, []
+    slots = max(1, int(economy.labor_capacity_remaining(state) // max(est.daily_actions, 0.1)))
+    slots = min(slots, len(empties))
+    targets = empties[:slots]
+    seeds = state.private.seeds.get(est.product, 0)
     if seeds >= 1:
-        return Objective(
-            ObjectiveKind.PLANT, targets, BASELINE_CROP, None, PLANT_DEADLINE_HOUR
-        ), market
-    if market:
-        return Objective(ObjectiveKind.REPOSITION, targets), market  # seeds arrive after this turn
-    return PASS_OBJECTIVE, []
+        return Objective(ObjectiveKind.PLANT, targets, est.product, None, PLANT_DEADLINE_HOUR), []
+    seed_price = CROPS[est.product].seed
+    qty = min(slots, (farm.money - reserve) // seed_price)
+    if qty < 1:
+        return None, []
+    order = MarketOrder(MarketOp.BUY_SEED, est.product, qty)
+    return Objective(ObjectiveKind.REPOSITION, targets), [order]  # seeds arrive after this turn
+
+
+def _animal_execution(
+    state: GameState, est: OpportunityEstimate, reserve: int
+) -> tuple[Objective | None, list]:
+    """Stateless chain read off the observable farm: build the structure, buy
+    the animal, fetch it from the shed, place it. Each turn does the next step."""
+    farm = state.me
+    spec = ANIMALS[est.product]
+    kind = TileKind(spec.structure)
+    access = usable_shed_access(farm)
+    structures = _by_shed_distance(farm, empty_structures(farm, kind))
+    if carried(farm.farmer, est.product) >= 1:
+        if structures:
+            return Objective(ObjectiveKind.PLACE_ANIMAL, structures, est.product), []
+        empties = _by_shed_distance(farm, empty_tiles(farm))
+        if empties:
+            return Objective(ObjectiveKind.BUILD_STRUCTURE, empties[:1], spec.structure), []
+        return None, []
+    if state.private.shed.get(est.product, 0) >= 1:
+        if not access:
+            return None, []
+        return Objective(ObjectiveKind.FETCH_ITEM, access, est.product, 1), []
+    if not structures:
+        empties = _by_shed_distance(farm, empty_tiles(farm))
+        if not empties:
+            return None, []
+        return Objective(ObjectiveKind.BUILD_STRUCTURE, empties[:1], spec.structure), []
+    if not access or farm.money - spec.cost < reserve:
+        return None, []
+    order = MarketOrder(MarketOp.BUY_ANIMAL, est.product, 1)
+    return Objective(ObjectiveKind.REPOSITION, access), [order]
+
+
+def _fertilize_execution(
+    state: GameState, est: OpportunityEstimate, reserve: int
+) -> tuple[Objective | None, list]:
+    farm = state.me
+    if est.target is None:
+        return None, []
+    if carried(farm.farmer, FERTILIZER) >= 1:
+        return Objective(ObjectiveKind.FERTILIZE_CROP, (est.target,)), []
+    access = usable_shed_access(farm)
+    if not access:
+        return None, []
+    if state.private.shed.get(FERTILIZER, 0) >= 1:
+        return Objective(ObjectiveKind.FETCH_ITEM, access, FERTILIZER, 1), []
+    if farm.money - economy.buy_price(state, FERTILIZER) < reserve:
+        return None, []
+    order = MarketOrder(MarketOp.BUY_PRODUCT, FERTILIZER, 1)
+    return Objective(ObjectiveKind.REPOSITION, access), [order]
+
+
+_EXECUTORS = {
+    OpportunityKind.CROP: _crop_execution,
+    OpportunityKind.ANIMAL: _animal_execution,
+    OpportunityKind.FERTILIZE: _fertilize_execution,
+}
+
+
+def _economic_objective(state: GameState) -> tuple[Objective | None, list]:
+    """Best positive, realizable, reserve-respecting opportunity that can act now."""
+    reserve = economy.cash_reserve(state)
+    for est in economy.rank_opportunities(state):
+        if est.score <= 0 or est.realization_probability <= 0:
+            break  # sorted: nothing further clears the bar
+        if not economy.affordable(state, est, reserve):
+            continue
+        objective, market = _EXECUTORS[est.kind](state, est, reserve)
+        if objective is not None:
+            return objective, market
+    return None, []
+
+
+# --- Market: basic sell/hold ------------------------------------------------------------------
 
 
 def _sell_orders(state: GameState, objective: Objective) -> list[MarketOrder]:
-    """Sell shed wheat beyond the feed reserve. Wheat dropped this turn counts:
-    unit actions are applied before market orders (TILLA_RULES.md §20)."""
+    """Sell shed products per economy.sell_plan. Items dropped this turn count
+    and items picked up this turn are excluded: unit actions are applied before
+    market orders (TILLA_RULES.md §20)."""
     farm = state.me
-    available = state.private.shed.get(WHEAT, 0)
+    plan = economy.sell_plan(state)
     acting_at_shed = farm.farmer.position in objective.targets
-    if objective.kind is ObjectiveKind.DELIVER and acting_at_shed:
-        available += carried(farm.farmer, WHEAT)
-    if objective.kind is ObjectiveKind.FETCH_FEED and acting_at_shed and objective.item == WHEAT:
-        available -= objective.quantity or 0
-    reserve = FEED_WHEAT_RESERVE_PER_ANIMAL * len(animals(farm))
-    excess = available - reserve
-    return [MarketOrder(MarketOp.SELL, WHEAT, excess)] if excess > 0 else []
+    if objective.kind is ObjectiveKind.DELIVER and acting_at_shed and farm.farmer.inventory:
+        holds = {WHEAT: economy.feed_wheat_hold(state), FERTILIZER: economy.fertilizer_hold(state)}
+        for item, qty in farm.farmer.inventory.items():
+            if item not in economy.PRODUCTS:
+                continue
+            shed_have = state.private.shed.get(item, 0)
+            plan[item] = max(0, shed_have + qty - holds.get(item, 0))
+    if objective.kind in (ObjectiveKind.FETCH_FEED, ObjectiveKind.FETCH_ITEM) and acting_at_shed:
+        item = objective.item
+        if item in plan:
+            plan[item] = max(0, plan[item] - (objective.quantity or 0))
+    return [MarketOrder(MarketOp.SELL, item, qty) for item, qty in plan.items() if qty > 0]
 
 
 def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
@@ -161,25 +269,33 @@ def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
         objective, extra = _feed_objective(state, risk_animals)
         market.extend(extra)
 
-    # 2. Mandatory daily care of existing productive assets.
+    # 2+3. Mandatory daily work: care of existing assets, harvest of ready
+    #      output and collection of waiting fertilizer. All of it must happen
+    #      today and none of it is urgent, so the task layer services the
+    #      nearest of these objectives first (spatial batching, §16).
+    daily: list[Objective] = []
     if objective is None:
         unwatered = tuple(pos for pos, p in our_plants if plant_needs_water(day, p))
         if unwatered:
-            objective = Objective(ObjectiveKind.WATER_CROP, unwatered)
-    if objective is None:
+            daily.append(Objective(ObjectiveKind.WATER_CROP, unwatered))
         unfed = tuple(pos for pos, t in our_animals if animal_needs_feed(t))
         if unfed:
-            objective, extra = _feed_objective(state, unfed)
-            market.extend(extra)
-
-    # 3. Harvest ready output (crops and animal products).
-    if objective is None:
+            feed, extra = _feed_objective(state, unfed)
+            if feed is not None:
+                daily.append(feed)
+                market.extend(extra)
         ready = tuple(pos for pos, p in our_plants if plant_harvest_ready(day, p))
-        ready += tuple(pos for pos, t in our_animals if animal_harvest_ready(t))
+        ready += tuple(pos for pos, t in our_animals if animal_harvest_ready(t, day))
         if ready:
-            objective = Objective(
-                ObjectiveKind.HARVEST, tuple(sorted(ready, key=lambda p: (p.y, p.x)))
+            daily.append(
+                Objective(ObjectiveKind.HARVEST, tuple(sorted(ready, key=lambda p: (p.y, p.x))))
             )
+        waiting = tuple(pos for pos, t in our_animals if animal_fertilizer_ready(t))
+        if waiting:
+            daily.append(Objective(ObjectiveKind.COLLECT_FERTILIZER, waiting))
+        daily.extend(_started_work(state))
+        if daily:
+            objective = daily[0]
 
     # 4. Final day: get carried produce into the shed so it can still be sold.
     carrying = carried_total(farm.farmer) > 0
@@ -187,12 +303,10 @@ def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
     if objective is None and day >= LAST_DAY and carrying and access:
         objective = Objective(ObjectiveKind.DELIVER, access)
 
-    # 5. Continue the simple production cycle: plant baseline wheat.
+    # 5. Economics: the best opportunity that clears the bar and the reserve.
     if objective is None:
-        objective, extra = _plant_objective(state)
+        objective, extra = _economic_objective(state)
         market.extend(extra)
-        if objective.kind is ObjectiveKind.PASS:
-            objective = None
 
     # 6. Idle: deliver carried produce; otherwise PASS.
     if objective is None:
@@ -201,4 +315,5 @@ def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
         )
 
     market = _sell_orders(state, objective) + market
-    return StrategicPlan(objective=objective, market=tuple(market))
+    equal = tuple(daily[1:]) if daily and objective is daily[0] else ()
+    return StrategicPlan(objective=objective, market=tuple(market), equal_priority=equal)

@@ -1,7 +1,7 @@
 """Strategic objectives -> concrete unit jobs. May use pathing; no market economics.
 
-Milestone 2: single-unit execution. The farmer works the plan's objective;
-hired hands (not planned until Milestone 4) legally PASS.
+Single-unit execution: the farmer works the plan's objective; hired hands
+(not planned until Milestone 4) legally PASS.
 """
 
 from __future__ import annotations
@@ -22,8 +22,12 @@ _ON_TILE_OPS = {
     ObjectiveKind.WATER_CROP: UnitOp.WATER,
     ObjectiveKind.FEED_ANIMAL: UnitOp.FEED,
     ObjectiveKind.HARVEST: UnitOp.HARVEST,
+    ObjectiveKind.COLLECT_FERTILIZER: UnitOp.COLLECT_FERTILIZER,
+    ObjectiveKind.FERTILIZE_CROP: UnitOp.FERTILIZE,
     ObjectiveKind.DELIVER: UnitOp.DROP,
 }
+
+_BUILD_OPS = {"COOP": UnitOp.BUILD_COOP, "PASTURE": UnitOp.BUILD_PASTURE}
 
 
 def _on_tile_action(objective: Objective, hour: int) -> UnitAction:
@@ -34,10 +38,17 @@ def _on_tile_action(objective: Objective, hour: int) -> UnitAction:
         if objective.deadline_hour is not None and hour > objective.deadline_hour:
             return PASS_UNIT_ACTION  # too late to water it today; do not plant
         return UnitAction(UnitOp.PLANT, objective.item)
-    if kind is ObjectiveKind.FETCH_FEED:
+    if kind in (ObjectiveKind.FETCH_FEED, ObjectiveKind.FETCH_ITEM):
         if objective.item is None:
             return PASS_UNIT_ACTION
         return UnitAction(UnitOp.PICKUP, objective.item, objective.quantity)
+    if kind is ObjectiveKind.BUILD_STRUCTURE:
+        op = _BUILD_OPS.get(objective.item or "")
+        return UnitAction(op) if op is not None else PASS_UNIT_ACTION
+    if kind is ObjectiveKind.PLACE_ANIMAL:
+        if objective.item is None:
+            return PASS_UNIT_ACTION
+        return UnitAction(UnitOp.PLACE, objective.item)
     op = _ON_TILE_OPS.get(kind)
     return UnitAction(op) if op is not None else PASS_UNIT_ACTION
 
@@ -59,9 +70,27 @@ def farmer_job(state: GameState, objective: Objective) -> UnitAction:
     return UnitAction(step) if step is not None else PASS_UNIT_ACTION
 
 
+def choose_nearest_objective(state: GameState, plan: StrategicPlan) -> Objective:
+    """Among the plan's equal-priority objectives, the one whose nearest
+    reachable target is closest (ties keep plan order)."""
+    candidates = (plan.objective, *plan.equal_priority)
+    tiles = state.me.tiles
+    start = state.me.farmer.position
+    best, best_distance = plan.objective, None
+    for objective in candidates:
+        if not objective.targets:
+            continue
+        found = nearest(tiles, start, objective.targets)
+        if found is None:
+            continue
+        if best_distance is None or found[1] < best_distance:
+            best, best_distance = objective, found[1]
+    return best
+
+
 def assign_jobs(state: GameState, plan: StrategicPlan) -> TurnAction:
     return TurnAction(
-        farmer=farmer_job(state, plan.objective),
+        farmer=farmer_job(state, choose_nearest_objective(state, plan)),
         hands=tuple(PASS_UNIT_ACTION for _ in state.me.hands),
         market=plan.market,
     )

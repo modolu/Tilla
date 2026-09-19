@@ -45,6 +45,16 @@ from agents.baseline import agent as baseline_agent
 env.run([main.agent, baseline_agent])
 ```
 
+## Explain economic decisions
+
+```bash
+python -m tools.replay_analysis --opponent pass --seed 2026 --steps 0 264 480
+```
+
+Prints the ranked opportunities (revenue, costs, labor, land, net value,
+score), the cash reserve, shed pressure and the selected objective for the
+requested turns of one official episode.
+
 ## Regenerate observation fixtures
 
 ```bash

@@ -7,6 +7,7 @@ mechanics they encode are those verified in ``TILLA_RULES.md`` §4, §8-§10, §
 from __future__ import annotations
 
 from kaggriculture_bot.constants import (
+    ANIMALS,
     CROPS,
     EARLY_MIN_CASH_RESERVE,
     EARLY_PHASE_END_DAY,
@@ -15,10 +16,14 @@ from kaggriculture_bot.constants import (
     LAST_DAY,
     MID_MIN_CASH_RESERVE,
     SCALE_PHASE_END_DAY,
+    SHED_CAPACITY,
+    SHED_EMERGENCY,
+    SHED_PRESSURE_START,
     TURNS_PER_DAY,
 )
 from kaggriculture_bot.models import (
     FarmState,
+    GameState,
     PlantTile,
     Position,
     StructureTile,
@@ -57,6 +62,15 @@ def animals(farm: FarmState) -> list[tuple[Position, StructureTile]]:
 def empty_tiles(farm: FarmState) -> list[Position]:
     """Empty unlocked tiles (the only tiles PLANT/BUILD succeed on)."""
     return [pos for pos, _ in tiles_of_kind(farm, TileKind.EMPTY)]
+
+
+def empty_structures(farm: FarmState, kind: TileKind) -> list[Position]:
+    """Coops/pastures of ``kind`` with no animal placed."""
+    return [pos for pos, tile in tiles_of_kind(farm, kind) if tile.animal is None]
+
+
+def unlocked_tile_count(farm: FarmState) -> int:
+    return sum(1 for row in farm.tiles for tile in row if tile.kind is not TileKind.LOCKED)
 
 
 def shed_access_positions(size: int) -> tuple[Position, ...]:
@@ -118,8 +132,9 @@ def plant_needs_water(day: int, plant: PlantTile) -> bool:
     if plant.watered_today:
         return False
     spec = CROPS.get(plant.crop)
-    if spec is not None and not spec.ongoing and plant_age(day, plant) > spec.max_yield_day:
-        return False
+    if spec is not None and not spec.ongoing:
+        if plant_age(day, plant) > spec.max_yield_day or plant.yield_units >= spec.max_yield:
+            return False  # decaying or already at the yield cap: harvest instead
     return True
 
 
@@ -142,6 +157,8 @@ def plant_harvest_ready(day: int, plant: PlantTile) -> bool:
         return False
     if spec.ongoing:
         return True
+    if plant.yield_units >= spec.max_yield:
+        return True  # cap reached: further watering adds nothing
     return age > spec.max_yield_day or (age == spec.max_yield_day and plant.watered_today)
 
 
@@ -155,8 +172,24 @@ def animal_needs_feed(structure: StructureTile) -> bool:
     return structure.animal is not None and not structure.animal.fed_today
 
 
-def animal_harvest_ready(structure: StructureTile) -> bool:
-    return structure.animal is not None and structure.animal.yield_units > 0
+def animal_harvest_ready(structure: StructureTile, day: int | None = None) -> bool:
+    """Product is worth a trip: the next production would hit the tile's
+    ``max_held`` cap (lost output), or the season is ending and any product is
+    unharvested. ``day=None`` means "any product" (Milestone 2 behaviour)."""
+    a = structure.animal
+    if a is None or a.yield_units <= 0:
+        return False
+    if day is None:
+        return True
+    spec = ANIMALS.get(a.animal)
+    if spec is None or day >= LAST_DAY - 1:
+        return True
+    return a.yield_units >= spec.max_held - 1
+
+
+def animal_fertilizer_ready(structure: StructureTile) -> bool:
+    """One fertilizer unit is waiting; it does not accumulate, so collect it today."""
+    return structure.animal is not None and structure.animal.fertilizer_available
 
 
 # --- Season / cash ----------------------------------------------------------------------
@@ -181,3 +214,31 @@ def min_cash_reserve(day: int) -> int:
     if day <= HARVEST_PHASE_END_DAY:
         return HARVEST_MIN_CASH_RESERVE
     return 0
+
+
+# --- Shed capacity (TILLA_RULES.md §4; thresholds TILLA_STRATEGY.md §5) -----------------
+
+
+def shed_occupancy(state: GameState) -> int:
+    """Non-seed items in the shed right now."""
+    return sum(state.private.shed.values())
+
+
+def shed_free_capacity(state: GameState) -> int:
+    return max(0, SHED_CAPACITY - shed_occupancy(state))
+
+
+def shed_pressure(state: GameState) -> float:
+    """0 below SHED_PRESSURE_START, rising linearly to 1 at SHED_EMERGENCY and above."""
+    occupancy = shed_occupancy(state)
+    if occupancy < SHED_PRESSURE_START:
+        return 0.0
+    span = max(1, SHED_EMERGENCY - SHED_PRESSURE_START)
+    return min(1.0, (occupancy - SHED_PRESSURE_START) / span)
+
+
+def overflow_risk(state: GameState) -> int:
+    """Items that would be discarded if every carried unit were dropped now
+    (the end-of-day auto-drop does exactly that)."""
+    carried_units = sum(carried_total(unit) for unit in state.me.units)
+    return max(0, carried_units - shed_free_capacity(state))
