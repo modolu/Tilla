@@ -485,10 +485,10 @@ Verified against installed `kaggle-environments==1.30.2` (`kaggriculture.py` `_t
 
 ### Shops
 
-- new shop unlock every **3 days** by default;
-- selection is uniform **with replacement**;
-- duplicate shop instances are possible;
-- maximum 8 unlocked instances;
+- new shop unlock every **3 days** by default (`townShopUnlockInterval = 3`): one shop is added at the end of day `d` whenever `(d + 1) % 3 == 0`, so the first shop is active from day 3;
+- selection is a seeded uniform draw **without replacement** from the shops not yet unlocked;
+- duplicate shop instances are therefore **not possible**; each of the 8 shops appears at most once;
+- all 8 shops are unlocked from day 24 onward and the list then stops changing;
 - once unlocked, a shop stays active;
 - each instance consumes on every **4-turn** shop tick;
 - each requested product normally consumes 1;
@@ -507,7 +507,7 @@ Shop demand:
 | Smoothie Shop | Strawberry, Milk |
 | Farmers Market | Wheat, Carrot, Tomato, Strawberry |
 
-Duplicate shops consume independently.
+Verified against installed `kaggle-environments==1.30.2` (`kaggriculture.py` `_end_of_day`, `README.md` "randomly selected from the shops that have not yet been added") and by `tests/test_rules_conformance.py`.
 
 ---
 

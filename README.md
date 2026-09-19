@@ -35,6 +35,14 @@ env = make("kaggriculture", configuration={"episodeSteps": 720}, debug=True)
 env.run([main.agent, "pass"])
 ```
 
+## Regenerate observation fixtures
+
+```bash
+python -m tools.make_fixtures
+```
+
+Rewrites `tests/fixtures/obs_*.json` from seeded official episodes.
+
 ## Package for submission
 
 ```bash

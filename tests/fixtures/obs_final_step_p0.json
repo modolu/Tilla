@@ -1,5 +1,5 @@
 {
- "day": 0,
+ "day": 29,
  "farms": [
   {
    "farmer": [
@@ -24,9 +24,27 @@
     ],
     [
      null,
+     {
+      "kind": "WEED"
+     },
      null,
      null,
      null,
+     "LOCKED",
+     "LOCKED",
+     "LOCKED",
+     "LOCKED",
+     "LOCKED"
+    ],
+    [
+     null,
+     {
+      "kind": "WEED"
+     },
+     null,
+     {
+      "kind": "WEED"
+     },
      null,
      "LOCKED",
      "LOCKED",
@@ -48,19 +66,9 @@
     ],
     [
      null,
-     null,
-     null,
-     null,
-     null,
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED"
-    ],
-    [
-     null,
-     null,
+     {
+      "kind": "WEED"
+     },
      null,
      null,
      null,
@@ -145,7 +153,9 @@
    "money": 3000.0,
    "tiles": [
     [
-     null,
+     {
+      "kind": "WEED"
+     },
      null,
      null,
      null,
@@ -161,7 +171,9 @@
      null,
      null,
      null,
-     null,
+     {
+      "kind": "WEED"
+     },
      "LOCKED",
      "LOCKED",
      "LOCKED",
@@ -270,29 +282,29 @@
    ]
   }
  ],
- "hour": 0,
+ "hour": 23,
  "market": {
   "inventory": {
-   "CARROT": 10000,
-   "EGG": 10000,
+   "CARROT": 9446,
+   "EGG": 9698,
    "FERTILIZER": 10000,
-   "MELON": 10000,
-   "MILK": 10000,
-   "STRAWBERRY": 10000,
-   "TOMATO": 10000,
-   "WHEAT": 10000,
-   "WOOL": 10000
+   "MELON": 9860,
+   "MILK": 9608,
+   "STRAWBERRY": 9446,
+   "TOMATO": 9698,
+   "WHEAT": 9482,
+   "WOOL": 9644
   },
   "prices": {
-   "CARROT": 35,
-   "EGG": 50,
+   "CARROT": 42,
+   "EGG": 68,
    "FERTILIZER": 100,
-   "MELON": 250,
-   "MILK": 160,
-   "STRAWBERRY": 120,
-   "TOMATO": 60,
-   "WHEAT": 25,
-   "WOOL": 200
+   "MELON": 293,
+   "MILK": 332,
+   "STRAWBERRY": 318,
+   "TOMATO": 96,
+   "WHEAT": 48,
+   "WOOL": 250
   }
  },
  "player": 0,
@@ -322,8 +334,17 @@
    "WOOL": 0
   }
  },
- "step": 0,
+ "step": 719,
  "town": {
-  "unlocked_shops": []
+  "unlocked_shops": [
+   "SMOOTHIE_SHOP",
+   "PET_CAFE",
+   "FARMERS_MARKET",
+   "YARN_STORE",
+   "BAKERY",
+   "BRUNCH_SPOT",
+   "ICE_CREAM_SHOP",
+   "PIZZA_SHOP"
+  ]
  }
 }

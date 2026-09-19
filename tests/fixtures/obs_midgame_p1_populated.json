@@ -1,5 +1,5 @@
 {
- "day": 0,
+ "day": 5,
  "farms": [
   {
    "farmer": [
@@ -8,7 +8,7 @@
    ],
    "hands": [],
    "hires_today": 0,
-   "money": 3000.0,
+   "money": 3015.0,
    "tiles": [
     [
      null,
@@ -63,7 +63,16 @@
      null,
      null,
      null,
-     null,
+     {
+      "consecutive_unwatered": 0,
+      "crop": "CARROT",
+      "fertilized_until_day": -1,
+      "kind": "PLANT",
+      "max_lifespan_step": 168,
+      "planted_day": 3,
+      "watered_today": true,
+      "yield_units": 2
+     },
      "LOCKED",
      "LOCKED",
      "LOCKED",
@@ -140,9 +149,18 @@
     4,
     4
    ],
-   "hands": [],
-   "hires_today": 0,
-   "money": 3000.0,
+   "hands": [
+    [
+     5,
+     4
+    ],
+    [
+     4,
+     5
+    ]
+   ],
+   "hires_today": 2,
+   "money": 1262.0,
    "tiles": [
     [
      null,
@@ -150,11 +168,11 @@
      null,
      null,
      null,
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED"
+     null,
+     null,
+     null,
+     null,
+     null
     ],
     [
      null,
@@ -162,11 +180,11 @@
      null,
      null,
      null,
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED"
+     null,
+     null,
+     null,
+     null,
+     null
     ],
     [
      null,
@@ -174,11 +192,11 @@
      null,
      null,
      null,
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED"
+     null,
+     null,
+     null,
+     null,
+     null
     ],
     [
      null,
@@ -186,23 +204,46 @@
      null,
      null,
      null,
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED"
+     null,
+     null,
+     null,
+     null,
+     null
     ],
     [
+     {
+      "kind": "PASTURE"
+     },
+     {
+      "animal": "GOOSE",
+      "cared_today": false,
+      "consecutive_unfed": 0,
+      "fed_today": false,
+      "fertilizer_available": true,
+      "kind": "COOP",
+      "pending_care_bonus": 1,
+      "placed_day": 0,
+      "yield_units": 4
+     },
+     {
+      "consecutive_unwatered": 0,
+      "crop": "TOMATO",
+      "fertilized_until_day": -1,
+      "kind": "PLANT",
+      "max_lifespan_step": -1,
+      "planted_day": 0,
+      "watered_today": false,
+      "yield_units": 0
+     },
+     {
+      "kind": "WEED"
+     },
      null,
      null,
      null,
      null,
      null,
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED",
-     "LOCKED"
+     null
     ],
     [
      "LOCKED",
@@ -266,64 +307,71 @@
     ]
    ],
    "unlocked_quadrants": [
-    "NW"
+    "NW",
+    "NE"
    ]
   }
  ],
- "hour": 0,
+ "hour": 1,
  "market": {
   "inventory": {
-   "CARROT": 10000,
-   "EGG": 10000,
-   "FERTILIZER": 10000,
-   "MELON": 10000,
-   "MILK": 10000,
-   "STRAWBERRY": 10000,
-   "TOMATO": 10000,
-   "WHEAT": 10000,
-   "WOOL": 10000
+   "CARROT": 9991,
+   "EGG": 9989,
+   "FERTILIZER": 9999,
+   "MELON": 9989,
+   "MILK": 9989,
+   "STRAWBERRY": 9989,
+   "TOMATO": 9989,
+   "WHEAT": 9981,
+   "WOOL": 9963
   },
   "prices": {
-   "CARROT": 35,
-   "EGG": 50,
+   "CARROT": 38,
+   "EGG": 51,
    "FERTILIZER": 100,
-   "MELON": 250,
-   "MILK": 160,
-   "STRAWBERRY": 120,
-   "TOMATO": 60,
-   "WHEAT": 25,
-   "WOOL": 200
+   "MELON": 272,
+   "MILK": 189,
+   "STRAWBERRY": 148,
+   "TOMATO": 61,
+   "WHEAT": 29,
+   "WOOL": 231
   }
  },
- "player": 0,
+ "player": 1,
  "private": {
   "inventories": [
+   {
+    "WHEAT": 5
+   },
+   {},
    {}
   ],
   "seeds": {
-   "CARROT": 0,
+   "CARROT": 1,
    "MELON": 0,
    "STRAWBERRY": 0,
    "TOMATO": 0,
-   "WHEAT": 0
+   "WHEAT": 2
   },
   "shed": {
    "CARROT": 0,
    "COW": 0,
    "EGG": 0,
-   "FERTILIZER": 0,
+   "FERTILIZER": 4,
    "GOOSE": 0,
    "MELON": 0,
    "MILK": 0,
    "SHEEP": 0,
    "STRAWBERRY": 0,
    "TOMATO": 0,
-   "WHEAT": 0,
+   "WHEAT": 3,
    "WOOL": 0
   }
  },
- "step": 0,
+ "step": 121,
  "town": {
-  "unlocked_shops": []
+  "unlocked_shops": [
+   "YARN_STORE"
+  ]
  }
 }

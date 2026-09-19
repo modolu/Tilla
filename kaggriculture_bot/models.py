@@ -1,1 +1,263 @@
-"""Typed internal state, action, and value objects (Milestone 1)."""
+"""Typed internal state, action, and value objects.
+
+Parsed state objects are frozen dataclasses so that ``GameState`` is immutable
+after parsing. Mapping fields (``dict[str, int]``) are fresh copies built by the
+parser and never alias the raw Kaggle observation.
+
+All real game quantities (money, counts, positions, days) are ``int``.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+from kaggriculture_bot.constants import OPPONENT_HISTORY_LIMIT
+
+# --- Board tiles ---------------------------------------------------------------
+#
+# Official tile variants (kaggriculture.py 1.30.2): ``None`` (empty unlocked),
+# ``"LOCKED"``, ``{"kind": "PLANT", ...}``, ``{"kind": "WEED"}``, and
+# ``{"kind": "COOP" | "PASTURE", ...}`` which carries animal fields only while
+# an animal is placed (an empty structure has no ``animal`` key).
+
+
+class TileKind(StrEnum):
+    EMPTY = "EMPTY"
+    LOCKED = "LOCKED"
+    PLANT = "PLANT"
+    WEED = "WEED"
+    COOP = "COOP"
+    PASTURE = "PASTURE"
+
+
+STRUCTURE_KINDS = frozenset({TileKind.COOP, TileKind.PASTURE})
+
+
+@dataclass(frozen=True)
+class EmptyTile:
+    kind: TileKind = TileKind.EMPTY
+
+
+@dataclass(frozen=True)
+class LockedTile:
+    kind: TileKind = TileKind.LOCKED
+
+
+@dataclass(frozen=True)
+class WeedTile:
+    kind: TileKind = TileKind.WEED
+
+
+@dataclass(frozen=True)
+class PlantTile:
+    crop: str
+    planted_day: int
+    watered_today: bool
+    consecutive_unwatered: int
+    yield_units: int
+    max_lifespan_step: int  # -1 for ongoing crops
+    fertilized_until_day: int  # -1 when not fertilized
+    kind: TileKind = TileKind.PLANT
+
+
+@dataclass(frozen=True)
+class AnimalState:
+    """Fields present on a coop/pasture tile only while an animal occupies it."""
+
+    animal: str
+    placed_day: int
+    yield_units: int
+    consecutive_unfed: int
+    fed_today: bool
+    cared_today: bool
+    fertilizer_available: bool
+    pending_care_bonus: int
+
+
+@dataclass(frozen=True)
+class StructureTile:
+    kind: TileKind  # COOP or PASTURE
+    animal: AnimalState | None  # None while the structure is empty
+
+
+Tile = EmptyTile | LockedTile | WeedTile | PlantTile | StructureTile
+
+EMPTY_TILE = EmptyTile()
+LOCKED_TILE = LockedTile()
+WEED_TILE = WeedTile()
+
+
+# --- Farm, private, market, town, game state ---------------------------------------
+
+
+@dataclass(frozen=True)
+class Position:
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
+class UnitState:
+    index: int  # 0 farmer, 1+ hired hands in official hand order
+    position: Position
+    # Carried inventory. ``None`` means unobservable: opponent units' carried
+    # inventories are private and are never invented as empty.
+    inventory: dict[str, int] | None
+
+
+@dataclass(frozen=True)
+class FarmState:
+    player_id: int
+    money: int
+    tiles: tuple[tuple[Tile, ...], ...]  # tiles[y][x]
+    units: tuple[UnitState, ...]  # (farmer, *hands)
+    unlocked_quadrants: frozenset[str]
+    hires_today: int
+
+    @property
+    def farmer(self) -> UnitState:
+        return self.units[0]
+
+    @property
+    def hands(self) -> tuple[UnitState, ...]:
+        return self.units[1:]
+
+    @property
+    def board_size(self) -> int:
+        return len(self.tiles)
+
+
+@dataclass(frozen=True)
+class PrivateState:
+    shed: dict[str, int]
+    seeds: dict[str, int]
+
+
+@dataclass(frozen=True)
+class MarketState:
+    inventory: dict[str, int]
+    prices: dict[str, int]
+
+
+@dataclass(frozen=True)
+class TownState:
+    unlocked_shops: tuple[str, ...]  # official order; multiplicity preserved
+
+
+@dataclass(frozen=True)
+class GameState:
+    step: int
+    day: int
+    hour: int
+    player_id: int
+    me: FarmState
+    opponent: FarmState
+    private: PrivateState
+    market: MarketState
+    town: TownState
+
+
+# --- Typed actions -------------------------------------------------------------------
+#
+# Official op vocabularies (TILLA_RULES.md §6-§7). ``actions.py`` is the only
+# module that turns these into Kaggle list/string shape.
+
+
+class UnitOp(StrEnum):
+    PASS = "PASS"
+    NORTH = "NORTH"
+    SOUTH = "SOUTH"
+    EAST = "EAST"
+    WEST = "WEST"
+    PICKUP = "PICKUP"
+    DROP = "DROP"
+    PLANT = "PLANT"
+    WATER = "WATER"
+    HARVEST = "HARVEST"
+    FERTILIZE = "FERTILIZE"
+    DIG = "DIG"
+    BUILD_COOP = "BUILD_COOP"
+    BUILD_PASTURE = "BUILD_PASTURE"
+    PLACE = "PLACE"
+    FEED = "FEED"
+    COLLECT_FERTILIZER = "COLLECT_FERTILIZER"
+    CARE = "CARE"
+
+
+class MarketOp(StrEnum):
+    BUY_SEED = "BUY_SEED"
+    BUY_PRODUCT = "BUY_PRODUCT"
+    BUY_ANIMAL = "BUY_ANIMAL"
+    SELL = "SELL"
+    HIRE = "HIRE"
+    BUY_LAND = "BUY_LAND"
+
+
+# Ops whose official form carries an item argument (``PICKUP``/``PLACE`` may
+# also carry a quantity). Market ops other than HIRE/BUY_LAND carry item + qty.
+UNIT_OPS_WITH_ITEM = frozenset({UnitOp.PICKUP, UnitOp.PLANT, UnitOp.PLACE})
+MARKET_OPS_WITHOUT_ITEM = frozenset({MarketOp.HIRE, MarketOp.BUY_LAND})
+
+
+@dataclass(frozen=True)
+class UnitAction:
+    op: UnitOp
+    item: str | None = None
+    quantity: int | None = None
+
+
+@dataclass(frozen=True)
+class MarketOrder:
+    op: MarketOp
+    item: str | None = None
+    quantity: int | None = None
+
+
+@dataclass(frozen=True)
+class TurnAction:
+    """One turn's complete typed decision: farmer, hands (in hand order), market."""
+
+    farmer: UnitAction
+    hands: tuple[UnitAction, ...] = ()
+    market: tuple[MarketOrder, ...] = ()
+
+
+PASS_UNIT_ACTION = UnitAction(UnitOp.PASS)
+
+
+def pass_turn_action(hand_count: int) -> TurnAction:
+    """Typed turn in which every unit passes and no market orders are placed."""
+    if hand_count < 0:
+        raise ValueError(f"hand_count must be non-negative, got {hand_count}")
+    return TurnAction(
+        farmer=PASS_UNIT_ACTION,
+        hands=tuple(PASS_UNIT_ACTION for _ in range(hand_count)),
+        market=(),
+    )
+
+
+# --- Episode memory --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StrategicPlan:
+    """Placeholder for the plan chosen by ``strategy.py`` (later milestone). No fields yet."""
+
+
+@dataclass
+class EpisodeMemory:
+    """Bounded in-memory state for one player within one episode.
+
+    ``opponent_history`` is a bounded deque of summaries; the summary type is
+    defined by the opponent-model milestone and nothing is recorded before then.
+    """
+
+    player_id: int
+    last_step: int = -1
+    previous_market_inventory: dict[str, int] = field(default_factory=dict)
+    opponent_history: deque = field(default_factory=lambda: deque(maxlen=OPPONENT_HISTORY_LIMIT))
+    inferred_opponent_pipeline: dict[str, float] = field(default_factory=dict)
+    current_plan: StrategicPlan | None = None
+    plan_created_step: int | None = None

@@ -5,20 +5,28 @@ constants live here. This module owns the outer exception boundary and the
 structurally valid PASS fallback.
 """
 
-from kaggriculture_bot.actions import build_pass_action, fallback_pass_action
-from kaggriculture_bot.parser import count_hired_hands
+from kaggriculture_bot.actions import build_action, fallback_pass_action
+from kaggriculture_bot.models import pass_turn_action
+from kaggriculture_bot.parser import parse_observation
+from kaggriculture_bot.runtime import get_episode_memory, remember_turn
+from kaggriculture_bot.validator import validate_or_fallback
 
 
 def agent(obs):
     """Return one Kaggriculture action dict for the current observation.
 
-    Milestone 0: every unit deliberately passes. Later milestones insert the
-    parser -> features -> opponent -> economy -> strategy -> tasks -> actions ->
-    validator flow between observation and returned action.
+    Milestone 1 path: parse -> episode memory -> typed PASS turn -> format ->
+    validate. Every unit still deliberately passes; later milestones insert
+    features/opponent/economy/strategy/tasks between memory and the typed turn.
     """
     hand_count = 0
     try:
-        hand_count = count_hired_hands(obs)
-        return build_pass_action(hand_count)
+        state = parse_observation(obs)
+        hand_count = len(state.me.hands)
+        memory = get_episode_memory(state.player_id, state.step)
+        turn = pass_turn_action(hand_count)
+        action = validate_or_fallback(build_action(turn), hand_count)
+        remember_turn(memory, state)
+        return action
     except Exception:  # competition survival boundary, not normal control flow
         return fallback_pass_action(hand_count)

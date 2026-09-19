@@ -12,6 +12,9 @@ from pathlib import Path
 import pytest
 
 import main
+from kaggriculture_bot.actions import build_pass_action
+from kaggriculture_bot.runtime import get_episode_memory
+from tests.conftest import OFFICIAL_FIXTURES, load_fixture
 from tests.test_actions import assert_valid_action_shape
 from tools.package_submission import (
     RUNTIME_ENTRYPOINT,
@@ -83,10 +86,10 @@ def test_agent_returns_valid_pass_for_malformed_observation(bad_obs):
 def test_agent_fallback_keeps_one_pass_per_hand_when_downstream_raises(monkeypatch, obs_two_hands):
     """An unexpected downstream failure must still honour the hands contract."""
 
-    def explode(hand_count):
+    def explode(turn):
         raise RuntimeError("simulated downstream failure")
 
-    monkeypatch.setattr(main, "build_pass_action", explode)
+    monkeypatch.setattr(main, "build_action", explode)
     action = main.agent(obs_two_hands)
     assert_valid_action_shape(action, expected_hands=2)
     assert action == {"farmer": ["PASS"], "hands": [["PASS"], ["PASS"]], "market": []}
@@ -96,10 +99,27 @@ def test_agent_fallback_is_valid_when_parser_itself_raises(monkeypatch, obs_two_
     def explode(obs):
         raise RuntimeError("simulated parser failure")
 
-    monkeypatch.setattr(main, "count_hired_hands", explode)
+    monkeypatch.setattr(main, "parse_observation", explode)
     action = main.agent(obs_two_hands)
     assert_valid_action_shape(action, expected_hands=0)
     assert action == {"farmer": ["PASS"], "hands": [], "market": []}
+
+
+@pytest.mark.parametrize("name", OFFICIAL_FIXTURES)
+def test_agent_returns_legal_pass_for_every_official_fixture(name):
+    obs = load_fixture(name)
+    expected_hands = len(obs["farms"][obs["player"]]["hands"])
+    action = main.agent(obs)
+    assert_valid_action_shape(action, expected_hands=expected_hands)
+    assert action == build_pass_action(expected_hands)
+
+
+def test_agent_keeps_per_player_episode_memory(obs_two_hands, obs_seat1_step1):
+    main.agent(obs_two_hands)
+    main.agent(obs_seat1_step1)
+    assert get_episode_memory(0, step=2).last_step == 1
+    assert get_episode_memory(1, step=2).last_step == 1
+    assert get_episode_memory(0, step=2) is not get_episode_memory(1, step=2)
 
 
 def test_agent_hand_count_matches_official_environment_after_hire():
