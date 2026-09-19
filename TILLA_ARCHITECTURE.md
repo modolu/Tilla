@@ -255,8 +255,12 @@ No new top-level directory may be added without changing this file.
 │   └── package_submission.py# deterministic tar.gz packaging checks
 │
 ├── agents/
-│   ├── baseline.py          # stable simple baseline
-│   └── incumbent.py         # frozen promoted champion snapshot/adapter
+│   ├── baseline.py          # stable simple baseline (frozen Milestone 2 snapshot)
+│   ├── incumbent.py         # frozen promoted champion adapter: exposes agent(obs)
+│   └── incumbent_m4/        # frozen self-contained snapshot of the accepted Milestone 4
+│       ├── agent.py         #   runtime (copy of main.py + every kaggriculture_bot module,
+│       ├── *.py             #   imports rewritten to this package); own episode memory
+│       └── MANIFEST.sha256  #   byte-level freeze guard checked by tests/test_incumbent.py
 │
 ├── tests/
 │   ├── fixtures/            # small hand-written observations
@@ -284,6 +288,7 @@ No new top-level directory may be added without changing this file.
 - `tasks.py`: no market price formulas; consumes scored objectives.
 - `tools/`: never imported by submitted runtime.
 - `tests/`: never used as runtime configuration.
+- `agents/`: offline comparison agents only; never packaged. The incumbent snapshot never imports `main` or `kaggriculture_bot`, so candidate changes cannot alter the comparator, and it is never modified while a candidate is evaluated. Re-freezing happens only through an explicit promotion/snapshot commit.
 
 ---
 
