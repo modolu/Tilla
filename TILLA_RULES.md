@@ -225,6 +225,8 @@ COLLECT_FERTILIZER
 DIG
 ```
 
+PLANT validation is atomic per crop and turn: if a player's units request more `PLANT <crop>` actions in one turn than seeds of that crop are held, **every** `PLANT <crop>` request of that turn becomes a no-op (the seeds stay). Verified against installed `kaggle-environments==1.30.2` (`interpreter`, "Atomic PLANT validation") and by `tests/test_rules_conformance.py`.
+
 `DIG` removes:
 
 - plant;
@@ -428,6 +430,8 @@ Special floor rule:
 - if price is already 1, a sold unit is purchased but is **not added** to market inventory.
 
 Buy quote uses post-buy inventory and sell quote uses pre-sell inventory; immediate buy-then-sell against unchanged market gives zero net arbitrage.
+
+Processing detail (verified, `_process_market`): the two players' order lists are walked index by index; `HIRE`/`BUY_LAND` at an index are applied first in player order; then the remaining `SELL`/`BUY_*` orders at that index are processed **one unit at a time in lockstep** — both players' current units are quoted at the same pre-commit inventory, then both commit, then inventory (and the next quote) moves. Observed `prices` are refreshed once after the whole market phase from the final inventory. Market processing precedes town consumption in the same turn (§20), so a sale on a tick turn is priced before that tick's demand.
 
 ---
 

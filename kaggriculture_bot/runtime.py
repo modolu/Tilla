@@ -7,7 +7,7 @@ A new episode is detected when ``obs["step"] == 0`` (TILLA_ARCHITECTURE.md §5).
 
 from __future__ import annotations
 
-from kaggriculture_bot.models import EpisodeMemory, GameState
+from kaggriculture_bot.models import EpisodeMemory, GameState, MarketSnapshot
 
 _MEMORIES: dict[int, EpisodeMemory] = {}
 
@@ -37,6 +37,15 @@ def remember_turn(memory: EpisodeMemory, state: GameState) -> None:
     """
     memory.last_step = state.step
     memory.previous_market_inventory = dict(state.market.inventory)
+    if not memory.market_history or memory.market_history[-1].step != state.step:
+        memory.market_history.append(
+            MarketSnapshot(
+                step=state.step,
+                day=state.day,
+                inventory=dict(state.market.inventory),
+                unlocked_shops=tuple(state.town.unlocked_shops),
+            )
+        )
 
 
 def clear_all_memory() -> None:

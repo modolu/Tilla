@@ -262,7 +262,7 @@ Mechanics-derived inputs are not listed here: crop/animal tables, land prices, s
 | `LAND_SCARCITY_FREE_TILES` | 8 tiles | Land cost is zero while at least this many empty unlocked tiles remain, then rises linearly to full at zero | Tiles are only scarce when the field is nearly full; no land purchases are made in v1 |
 | `LAND_TILE_DAY_VALUE` | 18.0 coins/tile-day | Land opportunity cost per occupied tile-day at full scarcity | Roughly one wheat cycle's net value per tile-day |
 | `EXECUTION_RISK_PER_DAY` | 0.5 coins/day of occupancy | Execution-risk penalty | Longer exposure to weed/care/timing failure |
-| `MARKET_GLUT_PENALTY` | 0.0 | Market-glut term | Neutral until the market model (Milestone 5) exists |
+| Market term (`economy.market_penalty`) | quantity-aware shortfall | Market-glut term: current-price revenue minus the revenue the output realizes when sold unit by unit into the market projected for its sale window (own pipeline sold first); never negative (§13) | Completes the equation with the Milestone 5 market model; a glut is priced, scarcity is not bonus money |
 | `PHASE_WEIGHT` | 1.0 | Phase term | Neutral until the phase engine (Milestone 7) exists |
 | Realization probability | 1.0 or 0.0 | Binary: 0 when the season, an empty tile or the labor budget makes the opportunity mechanically unrealizable, else 1 | Explainable; no learned or random probabilities |
 | Last harvest day (`economy.LAST_HARVEST_DAY`) | day 28 | Production counted only if harvestable by day 28, leaving a day to deliver and sell | Conservative terminal-horizon guard |
@@ -521,6 +521,31 @@ Strawberry, melon, milk, and wool can crash quickly toward the 1-coin floor.
 
 Never bulk-produce or bulk-sell these without evaluating market inventory trajectory.
 
+### Initial Milestone 5 market and town parameters
+
+The market model (`economy.py`, market section) is deterministic arithmetic over the public shared-market state, the verified town mechanics and our own farm; it never uses opponent state (Milestone 6 owns attribution) and never assumes the opponent's same-turn queue. Its parameters are **initial, benchmark-tunable strategy choices, not game rules**; values live once in `constants.py` and change only with benchmark evidence recorded in §21. Mechanics (price curves, town-center schedule, shop lists, tick intervals, unlock rule, lockstep processing) come from `TILLA_RULES.md` §16–§20 and are conformance-tested.
+
+| Parameter / rule | Value | Controls | Why it exists |
+|---|---:|---|---|
+| Canonical price | `economy.market_price_at_inventory` (exact official formula) anchored to the observed quote (`price_anchor`, 0 in the pinned environment) | Every price estimate | One implementation; graceful if the runtime ever used other market parameters |
+| Quantity-aware revenue / cost | `estimate_sell_revenue` / `estimate_buy_cost` simulate the official per-unit SELL/BUY semantics | Realized value of a bulk sale or purchase | Selling 20 premium units is not 20 × the quote |
+| Expected town demand | exact town-center ticks (`step % 12 == 0`, day-banded 1/2/4) and known-shop ticks (`step % 4 == 0`, 2× for single-product shops) inside the horizon starting with the current turn; shops not yet identified contribute `unlocks × mean demand over the remaining pool` (uniform without replacement) | Projected inventory | Exact where observable; an expectation from public mechanics where not |
+| `MARKET_HISTORY_TURNS` | 24 snapshots | Bounded public market history in `EpisodeMemory` | Enough for the trend window; no unbounded state |
+| Aggregate trend | median residual inventory change per turn over the last `TREND_WINDOW_TURNS = 12` deltas (town consumption removed), clamped to ±`TREND_CAP_FRACTION_OF_T = 0.02` × T, × `TREND_DAMPING = 0.5`, extrapolated for at most `TREND_MAX_EXTRAPOLATION_TURNS = 24` turns | Projected inventory | Robust to one dump/shock; never attributed to a player |
+| Projected inventory | `current + trend − town demand + own supply due first`, clamped at 0 | Sale-window price | Our own pipeline (shed, carried, maturing crops, base scheduled production; no fertilizer/CARE bonus, no unbought assets) is sold before the unit being valued |
+| `MAX_SCARCITY_UPLIFT_FRACTION` | 0.0 | Share of a projected price *improvement* counted in investment revenue | Investment revenue never assumes rising prices; today's quote already prices today's scarcity; improvements drive sell timing only |
+| Pressure bands | price/base: > `1.10` scarce, `0.90–1.10` balanced, `0.60–0.90` glut, `< 0.60` severe, ≤ `PREMIUM_FLOOR_RISK_RATIO = 0.25` (or at the floor) floor-risk | Classification and premium protection | Bands on the official curve are product-specific by construction |
+| Premium glut protection | a new STRAWBERRY/MELON/MILK/WOOL investment (planting, animal, fertilizer) is rejected (realization 0) when its own output sold after our pipeline into the projected market ends at floor-risk | Investments | Large synchronized premium overproduction is refused; premium goods stay attractive under genuine scarcity |
+| Marginal-tile sizing | a seed purchase buys `economy.plantable_tiles`: tiles are added while the next tile, valued after the output of the tiles committed before it, still clears the bar; seeds already held (any crop) take tiles first | How many seeds of the chosen crop are bought | Each further tile sells into the glut its predecessors create; no bulk buy on a first-tile estimate |
+| Held seeds by value | held seeds are planted most valuable crop first (market-aware estimate), ties alphabetical | Which crop gets the nearest free tiles | A premium crop is never left unplanted behind a fast filler |
+| Sell/hold horizon | `hold_horizon`: the turn after the next town-center tick, ≤ `HOLD_HORIZON_TURNS = 13` | When held stock is re-priced | The first moment a sale sees the tick's demand |
+| `SELL_HOLD_MIN_UPLIFT` | 0.05 | A unit is held only if its projected later price beats its marginal price now by this fraction | Buffer for the interleaved, unknowable opponent queue |
+| Partial sale | unit-by-unit split (`split_sale`): marginal now vs marginal later, both falling as more is sold | Sell-now / hold quantities | Sell the units the market takes well now, hold the rest for scheduled demand |
+| Internal reservation first | feed wheat (`FEED_WHEAT_RESERVE_PER_ANIMAL`), fertilizer for positive fertilize jobs | Units never offered | Never sell an input and buy it back worse |
+| Shed override | at `SHED_PRESSURE_START` release held units, most glutted first, until occupancy is below the threshold; at `SHED_EMERGENCY` release everything | Holds under capacity pressure | Space beats market timing |
+| Cash override | below the reserve, release held units (lowest projected price first) until the shortfall is covered | Holds under cash pressure | Reserve before speculation |
+| Liquidation days | from `LIQUIDATE_START_DAY` no unit is held | Endgame | Waiting is unsafe near the end (§17) |
+
 ### Market manipulation
 
 We may react strategically to shared-market mechanics, but v1 does **not** attempt expensive adversarial manipulation for its own sake.
@@ -701,7 +726,7 @@ SHED_PRESSURE_START = 85
 SHED_EMERGENCY = 95
 ```
 
-Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters".
+Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters". Milestone 5 market and town parameters are documented in §13 "Initial Milestone 5 market and town parameters".
 
 Do not scatter these values through strategy code. Define them once in `constants.py` and document changes here with benchmark evidence.
 

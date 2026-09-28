@@ -92,3 +92,21 @@ def test_duplicate_checks_classify_same_turn_conflicts(obs_no_hands):
         1: Job(JobKind.FEED, Position(2, 2), PRIORITY_DAILY_WORK, item="WHEAT"),
     }
     assert _duplicate_checks(obs, [[0, 0]], [["PASS"]], Counter()) == []
+
+
+def test_wilson_lower_bound_matches_reference_values():
+    from tools.tournament import gate_passes, wilson_lower_bound
+
+    assert wilson_lower_bound(0, 0) == 0.0
+    # 2120 wins of 4000 (53.0%): the lower bound sits just above 51.4%.
+    assert abs(wilson_lower_bound(2120, 4000) - 0.5145) < 0.001
+    assert wilson_lower_bound(4000, 4000) > 0.999
+    assert abs(wilson_lower_bound(50, 100) - 0.4038) < 0.001
+    passing = {
+        "win_rate": 0.6, "wilson_lower_95": 0.58, "median_margin": 1.0, "crashes": 0, "timeouts": 0
+    }  # fmt: skip
+    assert gate_passes(passing)
+    assert not gate_passes({**passing, "win_rate": 0.53})
+    assert not gate_passes({**passing, "wilson_lower_95": 0.5})
+    assert not gate_passes({**passing, "median_margin": 0.0})
+    assert not gate_passes({**passing, "timeouts": 1})

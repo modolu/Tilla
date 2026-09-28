@@ -98,12 +98,73 @@ def _care_losses(steps, seat: int) -> dict[str, int]:
                         losses["crops_lost_unwatered"] += 1
                         if before["planted_day"] == oa["day"]:
                             losses["fresh_plantings_unwatered"] += 1
-                    elif before["yield_units"] <= 1 and not day_changed:
+                    elif not day_changed and before["yield_units"] >= 1:
+                        # Lifespan decay removed a plant that still held sellable yield
+                        # (a spent ongoing crop at 0 yield is its normal end of life).
                         losses["crops_lost_decay"] += 1
                 if isinstance(before, dict) and "animal" in before:
                     if isinstance(after, dict) and "animal" not in after and day_changed:
                         losses["animals_escaped"] += 1
     return dict(losses)
+
+
+def _market_checks(obs, action) -> Counter:
+    """Offline market diagnostics for the observed agent (Tilla only; others
+    yield zeros): premium purchases into a glutted market, glut-protection
+    rejections among the ranked opportunities, and how often the town model
+    (all of it / only the future-shop expectation) changed the sell orders.
+    Runs the read-only market model on a copy of the agent's memory."""
+    import copy
+
+    from kaggriculture_bot import economy
+    from kaggriculture_bot.constants import PREMIUM_PRODUCTS
+    from kaggriculture_bot.models import MarketPressure, TownDemand
+    from kaggriculture_bot.parser import parse_observation
+
+    out: Counter = Counter()
+    memory = _MEMORIES.get(obs["player"])
+    if memory is None:
+        return out
+    try:
+        state = parse_observation(obs)
+    except Exception:
+        return out
+    glutted = {MarketPressure.GLUT, MarketPressure.SEVERE_GLUT, MarketPressure.FLOOR_RISK}
+    for order in action.get("market", []):
+        if not (isinstance(order, list) and len(order) >= 2):
+            continue
+        product = order[1]
+        if order[0] == "BUY_ANIMAL":
+            from kaggriculture_bot.constants import ANIMALS
+
+            product = ANIMALS[product].product if product in ANIMALS else product
+        if order[0] in ("BUY_SEED", "BUY_ANIMAL") and product in PREMIUM_PRODUCTS:
+            inventory = state.market.inventory.get(product, 0)
+            if economy.market_pressure(product, inventory) in glutted:
+                out["premium_investments_while_glutted"] += 1
+    if obs["hour"] != 0:
+        return out
+    mem = copy.deepcopy(memory)
+    out["glut_protection_rejections"] += sum(
+        1 for e in economy.rank_opportunities(state, mem) if e.reason == "premium glut protection"
+    )
+    out["sales_checks"] += 1
+    with_town = economy.sell_plan(state, mem)
+    original = economy.expected_town_demand
+    try:
+        economy.expected_town_demand = lambda st, product, horizon: TownDemand(0, 0, 0.0)
+        without_town = economy.sell_plan(state, mem)
+        economy.expected_town_demand = lambda st, product, horizon: TownDemand(
+            original(st, product, horizon).town_center,
+            original(st, product, horizon).known_shops,
+            0.0,
+        )
+        without_future = economy.sell_plan(state, mem)
+    finally:
+        economy.expected_town_demand = original
+    out["town_model_changed_sales"] += with_town != without_town
+    out["future_shops_changed_sales"] += with_town != without_future
+    return out
 
 
 def _duplicate_checks(obs, units, acts, same_day_repeats: Counter) -> list[dict]:
@@ -188,6 +249,70 @@ def _already_done_today(tile, op: str) -> bool:
     return False
 
 
+def _realized_sales(steps, seat: int) -> dict:
+    """Replay every recorded market phase in the official lockstep order to
+    attribute realized SELL revenue per product to ``seat`` (exact for sales;
+    purchases are replayed only to move the inventory)."""
+    from kaggriculture_bot.constants import ANIMALS, CROPS, PRICE_FLOOR
+    from kaggriculture_bot.economy import market_price_at_inventory
+
+    sold: Counter = Counter()
+    revenue: Counter = Counter()
+    min_price: dict[str, int] = {}
+    floor_sales: Counter = Counter()
+    for i, after in enumerate(steps[1:]):
+        obs = steps[i][0]["observation"]
+        inv = dict(obs["market"]["inventory"])
+        queues = []
+        for s in (0, 1):
+            action = after[s]["action"]
+            market = action.get("market", []) if isinstance(action, dict) else []
+            queues.append([list(o) for o in market[:10] if isinstance(o, list) and o])
+        for idx in range(max((len(q) for q in queues), default=0)):
+            orders = [list(q[idx]) if idx < len(q) else None for q in queues]
+            remaining = [o[2] if o and o[0] != "HIRE" and len(o) > 2 else 0 for o in orders]
+            while any(r > 0 for r in remaining):
+                quotes = [None, None]
+                for s, o in enumerate(orders):
+                    if not o or remaining[s] <= 0:
+                        continue
+                    op, item = o[0], o[1]
+                    if op == "SELL" and item in inv:
+                        quotes[s] = ("SELL", item, market_price_at_inventory(item, inv[item]))
+                    elif op == "BUY_PRODUCT" and item in inv:
+                        quotes[s] = ("BUY", item, market_price_at_inventory(item, inv[item] - 1))
+                    elif op == "BUY_SEED" and item in CROPS:
+                        quotes[s] = ("SEED", item, CROPS[item].seed)
+                    elif op == "BUY_ANIMAL" and item in ANIMALS:
+                        quotes[s] = ("ANIMAL", item, ANIMALS[item].cost)
+                    else:
+                        remaining[s] = 0
+                if all(q is None for q in quotes):
+                    break
+                for s, q in enumerate(quotes):
+                    if q is None:
+                        continue
+                    op, item, price = q
+                    if op == "SELL":
+                        if s == seat:
+                            sold[item] += 1
+                            revenue[item] += price
+                            min_price[item] = min(min_price.get(item, price), price)
+                            if price <= PRICE_FLOOR:
+                                floor_sales[item] += 1
+                        if price > PRICE_FLOOR:
+                            inv[item] += 1
+                    elif op == "BUY":
+                        inv[item] -= 1
+                    remaining[s] -= 1
+    return {
+        "units_sold": dict(sold),
+        "revenue": dict(revenue),
+        "min_price": min_price,
+        "floor_sales": dict(floor_sales),
+    }
+
+
 def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bool = True) -> dict:
     """Play one official episode; ``candidate`` sits in ``seat`` (0 or 1)."""
     from kaggle_environments import make
@@ -201,12 +326,15 @@ def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bo
     duplicates = Counter()  # see _duplicate_checks
     duplicate_events: list[dict] = []
     same_day_repeats: Counter = Counter()  # (day, tile, op) -> redundant emissions
+    market_diag = Counter()  # premium investments while glutted, glut rejections, town impact
 
     def observed(obs):
         nonlocal hire_spend
         t0 = time.perf_counter()
         action = candidate(obs)
         timings.append((time.perf_counter() - t0) * 1000)
+        if instrument and isinstance(action, dict):
+            market_diag.update(_market_checks(obs, action))
         n_hands = len(obs["farms"][obs["player"]]["hands"])
         if validate_or_fallback(action, n_hands) != action:
             stats["malformed"] += 1
@@ -286,6 +414,15 @@ def run_game(candidate: Callable, opponent, seed: int, seat: int, instrument: bo
         "same_turn_noops": duplicates["same_turn_noop"],
         "redundant_care_actions": duplicates["redundant_care_action"],
         "duplicate_events": duplicate_events,
+        "premium_investments_while_glutted": market_diag["premium_investments_while_glutted"],
+        "glut_protection_rejections": market_diag["glut_protection_rejections"],
+        "town_model_changed_sales": market_diag["town_model_changed_sales"],
+        "future_shops_changed_sales": market_diag["future_shops_changed_sales"],
+        "sales_checks": market_diag["sales_checks"],
+        "realized_sales": _realized_sales(env.steps, seat),
+        "final_shed": dict(final[seat]["observation"].get("private", {}).get("shed", {}))
+        if isinstance(final[seat].get("observation"), dict)
+        else {},
         **_care_losses(env.steps, seat),
         "opponent_care_losses": _care_losses(env.steps, 1 - seat),
     }
@@ -343,6 +480,14 @@ def summarize(results: list[dict]) -> dict:
         "duplicate_single_use_actions": sum(r["duplicate_single_use_actions"] for r in results),
         "same_turn_noops": sum(r["same_turn_noops"] for r in results),
         "redundant_care_actions": sum(r["redundant_care_actions"] for r in results),
+        "premium_investments_while_glutted": sum(
+            r["premium_investments_while_glutted"] for r in results
+        ),
+        "glut_protection_rejections": sum(r["glut_protection_rejections"] for r in results),
+        "town_model_changed_sales": sum(r["town_model_changed_sales"] for r in results),
+        "future_shops_changed_sales": sum(r["future_shops_changed_sales"] for r in results),
+        "sales_checks": sum(r["sales_checks"] for r in results),
+        "premium": _premium_summary(results),
         "crashes": sum(r["ERROR"] + r["INVALID"] for r in results),
         "timeouts": sum(r["TIMEOUT"] for r in results),
         "malformed": sum(r["malformed"] for r in results),
@@ -357,6 +502,28 @@ def summarize(results: list[dict]) -> dict:
     }
 
 
+def _premium_summary(results: list[dict]) -> dict:
+    from kaggriculture_bot.constants import PREMIUM_PRODUCTS
+
+    out = {}
+    for product in PREMIUM_PRODUCTS:
+        units = sum(r["realized_sales"]["units_sold"].get(product, 0) for r in results)
+        revenue = sum(r["realized_sales"]["revenue"].get(product, 0) for r in results)
+        mins = [
+            r["realized_sales"]["min_price"][product]
+            for r in results
+            if product in r["realized_sales"]["min_price"]
+        ]
+        out[product] = {
+            "units_sold": units,
+            "units_held_at_end": sum(r["final_shed"].get(product, 0) for r in results),
+            "avg_price": round(revenue / units, 1) if units else None,
+            "min_price": min(mins) if mins else None,
+            "floor_sales": sum(r["realized_sales"]["floor_sales"].get(product, 0) for r in results),
+        }
+    return out
+
+
 def _resolve(name: str) -> Callable | str:
     if name == "main":
         import main
@@ -368,6 +535,10 @@ def _resolve(name: str) -> Callable | str:
         return hiring_disabled(main.agent)
     if name == "baseline":
         from agents.baseline import agent
+
+        return agent
+    if name == "incumbent":
+        from agents.incumbent import agent
 
         return agent
     return name  # built-in: pass / random / starter

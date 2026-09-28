@@ -5,7 +5,11 @@ requested steps, the ranked opportunities with their revenue, costs, labor,
 land, net value and score, the cash reserve and shed pressure, every objective
 the strategy listed, the hiring decision with its reasoning, the generated jobs
 and which unit was assigned to which job (and which assignments were carried
-over from the previous turn). Never imported by the submitted runtime.
+over from the previous turn), and the market outlook per product (inventory,
+price, aggregate trend, expected town-center / known-shop / future-shop
+demand, our projected supply, projected inventory and price, pressure bands,
+quantity-aware sell-now vs hold revenue and the sell/hold split with its
+reason). Never imported by the submitted runtime.
 
     python -m tools.replay_analysis --opponent pass --seed 2026 --steps 0 24 240
 """
@@ -91,14 +95,29 @@ def explain_state(state: GameState, memory: EpisodeMemory | None = None, top: in
             f"{action.op.value} {action.item or ''} {action.quantity or ''}".rstrip()
         )
     lines.append(
-        "  kind      product     score      net    revenue  byprod  setup  input  labor   land  "
-        "risk units turns  p  reason"
+        "  market: product    inv  price trend  town(center/shops/future)  own  ->  proj_inv "
+        "proj_price  now/later  avail sell hold  rev_now rev_hold  reason"
     )
-    for e in economy.rank_opportunities(state)[:top]:
+    for product, o in economy.market_outlooks(state, memory).items():
+        if o.available == 0 and state.private.shed.get(product, 0) == 0:
+            continue
+        lines.append(
+            f"    {product:<10} {o.inventory:6} {o.price:5} {o.trend_per_turn:5.1f}  "
+            f"{o.demand.town_center:3}/{o.demand.known_shops:3}/{o.demand.future_shops:5.1f}  "
+            f"{o.own_supply:4}  ->  {o.projected_inventory:7} {o.projected_price:6}  "
+            f"{o.pressure.value}/{o.projected_pressure.value}  {o.available:4} {o.sell_now:4} "
+            f"{o.hold:4}  {o.sell_now_revenue:6} {o.hold_revenue:6}  {o.reason}"
+        )
+    lines.append(
+        "  kind      product     score      net    revenue  byprod  setup  input  labor   land  "
+        "market  risk units turns  p  reason"
+    )
+    for e in economy.rank_opportunities(state, memory)[:top]:
         lines.append(
             f"  {e.kind:<9} {e.product:<10} {e.score:8.3f} {e.expected_net_value:8.1f} "
             f"{e.expected_revenue:8.1f} {e.byproduct_value:7.1f} {e.setup_cost:6.0f} "
-            f"{e.input_cost:6.1f} {e.labor_cost:6.1f} {e.land_cost:6.1f} {e.execution_risk:5.1f} "
+            f"{e.input_cost:6.1f} {e.labor_cost:6.1f} {e.land_cost:6.1f} {e.market_penalty:7.1f} "
+            f"{e.execution_risk:5.1f} "
             f"{e.expected_units:5} {e.turns_to_realize:5} {e.realization_probability:3.1f}  "
             f"{e.reason}"
         )

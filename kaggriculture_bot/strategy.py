@@ -96,10 +96,10 @@ def _feed_purchase(state: GameState, mouths: int) -> list[MarketOrder]:
     shortfall = mouths - _wheat_available(state)
     if shortfall <= 0:
         return []
-    cost = economy.buy_price(state, WHEAT) * shortfall
-    if state.me.money - cost < 0:
+    order = MarketOrder(MarketOp.BUY_PRODUCT, WHEAT, shortfall)
+    if state.me.money - economy.order_cost(state, order) < 0:
         return []
-    return [MarketOrder(MarketOp.BUY_PRODUCT, WHEAT, shortfall)]
+    return [order]
 
 
 # --- Started work: sunk investments to complete (TILLA_STRATEGY.md §3 tier 2, §16 item 4) ---
@@ -175,15 +175,20 @@ def _build_site(farm, claimed: set[Position]) -> Position | None:
     return None
 
 
-def _started_work(state: GameState, claimed: set[Position]) -> list[Objective]:
+def _started_work(
+    state: GameState, claimed: set[Position], memory: EpisodeMemory | None = None
+) -> list[Objective]:
     """Plant seeds already held and place animals already bought: mandatory
     daily work, never waiting for idle time."""
     work: list[Objective] = []
-    for crop, count in sorted(state.private.seeds.items()):
-        if count <= 0 or crop not in CROPS:
-            continue
-        if not economy.plan_crop(CROPS[crop], state.day).feasible:
-            continue
+    held = [
+        (crop, count)
+        for crop, count in state.private.seeds.items()
+        if count > 0 and crop in CROPS and economy.plan_crop(CROPS[crop], state.day).feasible
+    ]
+    # Most valuable crop first (its estimate is market-aware), ties alphabetical.
+    held.sort(key=lambda item: (-economy.estimate_crop(state, item[0], memory).score, item[0]))
+    for crop, count in held:
         objective = _plant_objective(state, crop, count, PRIORITY_DAILY_WORK, claimed)
         if objective is not None:
             work.append(objective)
@@ -196,24 +201,36 @@ def _started_work(state: GameState, claimed: set[Position]) -> list[Objective]:
 
 
 def _crop_execution(
-    state: GameState, est: OpportunityEstimate, reserve: int, claimed: set[Position]
+    state: GameState,
+    est: OpportunityEstimate,
+    reserve: int,
+    claimed: set[Position],
+    memory: EpisodeMemory | None = None,
 ) -> tuple[list[Objective], list[MarketOrder]]:
     farm = state.me
     if state.hour > PLANT_DEADLINE_HOUR or not empty_tiles(farm):
         return [], []
     slots = max(1, int(economy.labor_capacity_remaining(state) // max(est.daily_actions, 0.1)))
-    slots = min(slots, len(empty_tiles(farm)))
-    if state.private.seeds.get(est.product, 0) >= 1:
+    # Seeds already held (any crop) are planted first and take tiles too.
+    unplanted = sum(state.private.seeds.get(c, 0) for c in CROPS)
+    slots = min(slots, len(empty_tiles(farm)) - unplanted)
+    if state.private.seeds.get(est.product, 0) >= 1 or slots < 1:
         return [], []  # held seeds are already planted as started work
     seed_price = CROPS[est.product].seed
     qty = min(slots, (farm.money - reserve) // seed_price)
+    # Each further tile sells into the glut its predecessors create (§13).
+    qty = economy.plantable_tiles(state, est.product, memory, qty)
     if qty < 1:
         return [], []
     return [], [MarketOrder(MarketOp.BUY_SEED, est.product, qty)]  # seeds arrive after this turn
 
 
 def _animal_execution(
-    state: GameState, est: OpportunityEstimate, reserve: int, claimed: set[Position]
+    state: GameState,
+    est: OpportunityEstimate,
+    reserve: int,
+    claimed: set[Position],
+    memory: EpisodeMemory | None = None,
 ) -> tuple[list[Objective], list[MarketOrder]]:
     """Build the structure first, then buy the animal (placed as started work)."""
     farm = state.me
@@ -236,7 +253,11 @@ def _animal_execution(
 
 
 def _fertilize_execution(
-    state: GameState, est: OpportunityEstimate, reserve: int, claimed: set[Position]
+    state: GameState,
+    est: OpportunityEstimate,
+    reserve: int,
+    claimed: set[Position],
+    memory: EpisodeMemory | None = None,
 ) -> tuple[list[Objective], list[MarketOrder]]:
     farm = state.me
     if est.target is None or not usable_shed_access(farm):
@@ -260,45 +281,44 @@ _EXECUTORS = {
 
 
 def _economic_tier(
-    state: GameState, reserve: int, claimed: set[Position]
+    state: GameState, memory: EpisodeMemory, reserve: int, claimed: set[Position]
 ) -> tuple[list[Objective], list[MarketOrder]]:
     """Best positive, realizable, reserve-respecting opportunity that can act now."""
-    for est in economy.rank_opportunities(state):
+    for est in economy.rank_opportunities(state, memory):
         if est.score <= 0 or est.realization_probability <= 0:
             break  # sorted: nothing further clears the bar
         if not economy.affordable(state, est, reserve):
             continue
-        objectives, market = _EXECUTORS[est.kind](state, est, reserve, claimed)
+        objectives, market = _EXECUTORS[est.kind](state, est, reserve, claimed, memory)
         if objectives or market:
             return objectives, market
     return [], []
 
 
-# --- Market: basic sell/hold ------------------------------------------------------------------
+# --- Market: sell/hold via the market model (Milestone 5) ---------------------------------
 
 
-def _sell_orders(state: GameState, delivering: bool, feeding: int) -> list[MarketOrder]:
-    """Sell shed products per economy.sell_plan. Wheat that today's feeding
-    must still pick up from the shed is kept back. When a delivery is planned,
-    items carried by units already standing on an access tile count too:
-    unit actions are applied before market orders (TILLA_RULES.md §20)."""
+def _sell_orders(
+    state: GameState, memory: EpisodeMemory, delivering: bool, feeding: int
+) -> list[MarketOrder]:
+    """Sell shed products per the market model (economy.sell_plan) applied to
+    the stock the shed will hold when the market runs: unit actions come
+    first (TILLA_RULES.md §20), so wheat that today's feeding still picks up
+    is subtracted and, when a delivery is planned, items carried by units
+    already standing on an access tile are added."""
     farm = state.me
-    plan = economy.sell_plan(state)
+    adjustments: dict[str, int] = {}
     fetch = max(0, feeding - sum(carried(u, WHEAT) for u in farm.units))
-    if fetch and plan.get(WHEAT, 0) > 0:
-        plan[WHEAT] = max(0, plan[WHEAT] - fetch)
+    if fetch:
+        adjustments[WHEAT] = -min(fetch, state.private.shed.get(WHEAT, 0))
     if delivering:
         access = set(usable_shed_access(farm))
-        holds = {WHEAT: economy.feed_wheat_hold(state), FERTILIZER: economy.fertilizer_hold(state)}
-        extra: dict[str, int] = {}
         for unit in farm.units:
             if unit.position in access and unit.inventory:
                 for item, qty in unit.inventory.items():
                     if item in economy.PRODUCTS:
-                        extra[item] = extra.get(item, 0) + qty
-        for item, qty in extra.items():
-            shed_have = state.private.shed.get(item, 0)
-            plan[item] = max(0, shed_have + qty - holds.get(item, 0))
+                        adjustments[item] = adjustments.get(item, 0) + qty
+    plan = economy.sell_plan(state, memory, adjustments)
     return [MarketOrder(MarketOp.SELL, item, qty) for item, qty in plan.items() if qty > 0]
 
 
@@ -375,7 +395,7 @@ def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
             Objective(ObjectiveKind.COLLECT_FERTILIZER, waiting, priority=PRIORITY_DAILY_WORK)
         )
     claimed: set[Position] = set()  # tiles given to exactly one objective this turn
-    objectives.extend(_started_work(state, claimed))
+    objectives.extend(_started_work(state, claimed, memory))
 
     # 3. Final day: get carried produce into the shed so it can still be sold.
     carrying = any(carried_total(u) > 0 for u in farm.units)
@@ -385,7 +405,7 @@ def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
 
     # 4. Economics: the best opportunity that clears the bar and the reserve.
     reserve = economy.cash_reserve(state)
-    econ_objectives, econ_orders = _economic_tier(state, reserve, claimed)
+    econ_objectives, econ_orders = _economic_tier(state, memory, reserve, claimed)
     objectives.extend(econ_objectives)
     economic_orders.extend(econ_orders)
 
@@ -400,7 +420,10 @@ def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
 
     delivering = any(o.kind is ObjectiveKind.DELIVER for o in objectives)
     market = (
-        _sell_orders(state, delivering, feeding) + survival_orders + economic_orders + hire_orders
+        _sell_orders(state, memory, delivering, feeding)
+        + survival_orders
+        + economic_orders
+        + hire_orders
     )
     market = market[:MAX_MARKET_ORDERS_PER_TURN]  # explicit priority order; never rely on the env
     hires = sum(1 for o in market if o.op is MarketOp.HIRE)

@@ -69,7 +69,26 @@ margins, hires per day, hand-action utilization, care losses (crops lost to
 missed watering, fresh plantings left unwatered, animals escaped), malformed
 outputs and per-turn timing. `control` is the same `main.agent` with only its
 `HIRE` market orders removed (`tools.harness.hiring_disabled`), the Milestone 4
-ablation control.
+ablation control. `--opponent incumbent` plays the frozen champion
+(`agents.incumbent.agent`, the accepted Milestone 4 snapshot in
+`agents/incumbent_m4/`). The report also carries market diagnostics: realized
+sale prices per premium product (lockstep replay of both players' orders),
+premium purchases into glutted markets, glut-protection rejections and how
+often the town model changed the sell orders.
+
+## Promotion gate
+
+```bash
+python -m tools.tournament --seeds 10000 11499 --workers 3 --out benchmarks/results/gate.jsonl --resume
+```
+
+Plays every seed in both seats, candidate `main.agent` vs the frozen incumbent,
+across worker processes (each finished game is appended to `--out` at once and
+`--resume` continues an interrupted run) and prints the TILLA_STRATEGY.md §19
+gate statistics
+(win rate, 95% Wilson lower bound, seat records, cash margins, pair-level
+margins, crashes/timeouts, care and duplicate-work guardrails, premium-product
+and town-model diagnostics) plus `gate_passes`.
 
 ## Regenerate observation fixtures
 

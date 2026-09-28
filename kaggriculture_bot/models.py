@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from kaggriculture_bot.constants import OPPONENT_HISTORY_LIMIT
+from kaggriculture_bot.constants import MARKET_HISTORY_TURNS, OPPONENT_HISTORY_LIMIT
 
 # --- Board tiles ---------------------------------------------------------------
 #
@@ -258,6 +258,68 @@ class HiringDecision:
     spawns: tuple[Position, ...] = ()  # predicted spawn tile of each recommended hire
 
 
+# --- Market model (Milestone 5) ---------------------------------------------------------
+
+
+class MarketPressure(StrEnum):
+    """Deterministic scarcity/glut classification of one product's market."""
+
+    SCARCE = "SCARCE"
+    BALANCED = "BALANCED"
+    GLUT = "GLUT"
+    SEVERE_GLUT = "SEVERE_GLUT"
+    FLOOR_RISK = "FLOOR_RISK"
+
+
+@dataclass(frozen=True)
+class MarketSnapshot:
+    """Public shared-market state observed at one turn (bounded history)."""
+
+    step: int
+    day: int
+    inventory: dict[str, int]
+    unlocked_shops: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TownDemand:
+    """Expected units of one product removed from the market over a horizon:
+    exact scheduled town-center and known-shop ticks, plus the expectation
+    over shops not yet unlocked (uniform without replacement)."""
+
+    town_center: int
+    known_shops: int
+    future_shops: float
+
+    @property
+    def total(self) -> float:
+        return self.town_center + self.known_shops + self.future_shops
+
+
+@dataclass(frozen=True)
+class MarketOutlook:
+    """Explainable per-product market view behind a sell/hold decision."""
+
+    product: str
+    inventory: int
+    price: int
+    trend_per_turn: float
+    demand: TownDemand
+    own_supply: int
+    horizon_turns: int
+    projected_inventory: int
+    projected_price: int
+    pressure: MarketPressure
+    projected_pressure: MarketPressure
+    available: int
+    sell_now: int
+    hold: int
+    sell_now_revenue: int
+    hold_revenue: int
+    reason: str
+    anchor: int = 0  # observed price minus formula price at the observed inventory
+
+
 # --- Episode memory --------------------------------------------------------------------
 
 
@@ -426,3 +488,6 @@ class EpisodeMemory:
     # unit index) was assigned last turn, valid only for ``assignment_day``.
     unit_assignments: dict[int, Job] = field(default_factory=dict)
     assignment_day: int | None = None
+    # Bounded public market history (one MarketSnapshot per observed turn,
+    # newest last) for the aggregate flow estimate; never opponent-attributed.
+    market_history: deque = field(default_factory=lambda: deque(maxlen=MARKET_HISTORY_TURNS))

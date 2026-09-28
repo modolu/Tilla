@@ -198,7 +198,10 @@ EpisodeMemory
 - plan_created_step: int | None
 - unit_assignments: dict[int, Job]   # unit index -> job it is walking to / working on
 - assignment_day: int | None         # day the assignments belong to; cleared at the day boundary
+- market_history: deque[MarketSnapshot]  # last 24 observed turns: step, day, market inventory copy, unlocked shops
 ```
+
+`market_history` (Milestone 5) is the bounded public market record behind the aggregate flow estimate: one `MarketSnapshot(step, day, inventory, unlocked_shops)` per observed turn, newest last, capped at `MARKET_HISTORY_TURNS = 24`; inventories are copies (never aliases of the observation) and the deque is emptied with the rest of the memory at `step == 0`. It records shared public state only; nothing in it is attributed to the opponent.
 
 `Job` is the task planner's unit of work: `(kind, target, priority, item, quantity, deadline_hour, requires, unit)` with a stable `key` `(kind, x, y, item, unit)` so the same job is recognised across turns. `unit_assignments` is the only strategic memory the task layer reads and writes (movement-to-task persistence); hands vanish and the farmer respawns at the day refresh, so nothing in it survives a day boundary.
 

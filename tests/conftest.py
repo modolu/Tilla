@@ -121,6 +121,8 @@ def make_state(
     hands=None,
     prices=None,
     hand_inventories=None,
+    inventory_market=None,
+    shops=None,
 ):
     """Copy a real observation, apply overrides to our own farm, and parse it.
 
@@ -156,4 +158,14 @@ def make_state(
         me["money"] = money
     if prices is not None:
         obs["market"]["prices"].update(prices)
+    if inventory_market is not None:
+        # Market inventory override; prices follow the official curve unless overridden.
+        from kaggriculture_bot.economy import market_price_at_inventory
+
+        obs["market"]["inventory"].update(inventory_market)
+        for product, inv in inventory_market.items():
+            if prices is None or product not in prices:
+                obs["market"]["prices"][product] = market_price_at_inventory(product, inv)
+    if shops is not None:
+        obs["town"]["unlocked_shops"] = list(shops)
     return parse_observation(obs)

@@ -70,6 +70,49 @@ WHEAT = "WHEAT"
 FERTILIZER = "FERTILIZER"
 PRODUCTS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
 
+# --- Market and town mechanics (TILLA_RULES.md §16-§19; verified 1.30.2) ----------------
+
+# Official market price model (kaggriculture.py MARKET_PARAMS):
+#   price(inv) = base + sign * amp * f(|inv - I0|), amp = target * base / f(T),
+#   sign +1 below I0 (scarcity) and -1 above (glut); f in linear/sq/sqrt/log
+#   (log = ln(1 + x)); rounded to the nearest coin and floored at PRICE_FLOOR.
+MARKET_I0 = 10000
+PRICE_FLOOR = 1
+# product: (base, T, below_func, below_target, above_func, above_target)
+MARKET_PARAMS = {
+    "WHEAT": (25, 400, "sqrt", 0.80, "log", 0.20),
+    "CARROT": (35, 450, "log", 0.20, "sqrt", 0.70),
+    "TOMATO": (60, 200, "linear", 0.40, "sqrt", 0.60),
+    "STRAWBERRY": (120, 100, "sqrt", 0.70, "linear", 1.60),
+    "MELON": (250, 300, "log", 0.20, "sq", 3.60),
+    "EGG": (50, 332, "linear", 0.40, "log", 0.20),
+    "MILK": (160, 122, "sqrt", 0.60, "linear", 1.60),
+    "WOOL": (200, 105, "log", 0.20, "sq", 3.20),
+    "FERTILIZER": (100, 200, "linear", 0.40, "linear", 0.40),
+}
+# Products only ever bought/sold at the dynamic market price (BUY_PRODUCT).
+DYNAMIC_BUY_PRODUCTS = ("WHEAT", "FERTILIZER")
+
+# Town demand (kaggriculture.py SHOPS, TOWN_CENTER_*; TILLA_RULES.md §19).
+SHOPS = {
+    "BAKERY": ("EGG", "WHEAT"),
+    "PIZZA_SHOP": ("MILK", "TOMATO", "WHEAT"),
+    "BRUNCH_SPOT": ("EGG", "WHEAT", "STRAWBERRY"),
+    "YARN_STORE": ("WOOL",),
+    "ICE_CREAM_SHOP": ("STRAWBERRY", "MILK", "WHEAT"),
+    "PET_CAFE": ("CARROT",),
+    "SMOOTHIE_SHOP": ("STRAWBERRY", "MILK"),
+    "FARMERS_MARKET": ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY"),
+}
+TOWN_CENTER_INTERVAL = 12  # turns between town-center ticks (step % 12 == 0)
+SHOP_SELL_INTERVAL = 4  # turns between shop ticks (step % 4 == 0)
+SHOP_UNLOCK_INTERVAL = 3  # one shop unlocks at the end of day d when (d + 1) % 3 == 0
+TOWN_CENTER_DEMAND_SCHEDULE = ((20, 4), (10, 2), (0, 1))  # (first day, units per product per tick)
+TOWN_CENTER_PRODUCTS = tuple(p for p in PRODUCTS if p != FERTILIZER)
+
+# Premium goods whose official glut curves fall fastest (TILLA_STRATEGY.md §13).
+PREMIUM_PRODUCTS = ("STRAWBERRY", "MELON", "MILK", "WOOL")
+
 # --- Policy parameters (TILLA_STRATEGY.md §20; meaning documented there) ---------------
 
 EARLY_PHASE_END_DAY = 7
@@ -113,9 +156,9 @@ LAND_SCARCITY_FREE_TILES = 8
 # Execution risk: each day an opportunity stays exposed (weed/care/timing risk).
 EXECUTION_RISK_PER_DAY = 0.5
 
-# Neutral placeholders that keep the source-of-truth equation complete until
-# the market (M5) and opponent (M6) models exist.
-MARKET_GLUT_PENALTY = 0.0
+# Neutral placeholder that keeps the source-of-truth equation complete until
+# the phase engine (M7) exists. The market term is computed by the market
+# model (Milestone 5, economy.market_penalty).
 PHASE_WEIGHT = 1.0
 
 # Share of an animal's daily fertilizer byproduct assumed collected and sold.
@@ -152,3 +195,37 @@ PROMOTION_SLACK_TURNS = 1
 # Bound on retained opponent summaries in EpisodeMemory (implementation
 # parameter, not a game rule). Summaries themselves arrive with Milestone 6.
 OPPONENT_HISTORY_LIMIT = 64
+
+# --- Milestone 5 market and town parameters (TILLA_STRATEGY.md §13) -----------------------
+
+# Bounded public market history kept in EpisodeMemory (one snapshot per turn).
+MARKET_HISTORY_TURNS = 24
+# Aggregate flow estimator: median residual inventory change per turn (town
+# consumption removed) over the most recent observed deltas ...
+TREND_WINDOW_TURNS = 12
+# ... clamped per turn to this fraction of the product's T (the official
+# one-field season capacity) and damped before extrapolation, so one dump
+# never dominates a horizon.
+TREND_CAP_FRACTION_OF_T = 0.02
+TREND_DAMPING = 0.5
+# ... and extrapolated for at most this many turns of a horizon (a recent flow
+# is not assumed to persist for days).
+TREND_MAX_EXTRAPOLATION_TURNS = 24
+# Sale-timing horizon for shed stock: hold is evaluated at the turn after the
+# next town-center tick, never further than this many turns ahead.
+HOLD_HORIZON_TURNS = 13
+# A unit is held only if its projected later price beats selling it now by at
+# least this fraction (execution/uncertainty buffer for the interleaved market).
+SELL_HOLD_MIN_UPLIFT = 0.05
+# Share of a projected price *improvement* counted in an opportunity's revenue.
+# 0: investment revenue never assumes prices will rise (scarcity is not bonus
+# money; today's price already reflects today's scarcity). Projected
+# improvements are used only for sell timing (hold decisions).
+MAX_SCARCITY_UPLIFT_FRACTION = 0.0
+# Market pressure bands on price / base (the official curves make them product-specific):
+PRESSURE_SCARCE_RATIO = 1.10
+PRESSURE_GLUT_RATIO = 0.90
+PRESSURE_SEVERE_RATIO = 0.60
+# Premium glut protection: a new premium investment is rejected when the price
+# after selling its own output into the projected market falls to this share of base.
+PREMIUM_FLOOR_RISK_RATIO = 0.25

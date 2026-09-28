@@ -343,16 +343,35 @@ def test_overflow_risk_counts_carried_units_beyond_free_capacity(obs_no_hands):
 def test_wheat_needed_for_animal_feed_is_retained(obs_no_hands):
     tiles = {(1, 1): raw_animal(fed_today=True)}
     state = make_state(obs_no_hands, day=6, hour=0, tiles=tiles, shed={"WHEAT": 10})
-    assert economy.sell_plan(state) == {"WHEAT": 10 - FEED_WHEAT_RESERVE_PER_ANIMAL}
+    outlook = economy.market_outlooks(state)["WHEAT"]
+    assert outlook.available == 10 - FEED_WHEAT_RESERVE_PER_ANIMAL
+    assert outlook.sell_now + outlook.hold == outlook.available
+    assert economy.sell_plan(state)["WHEAT"] == outlook.sell_now >= 1
     scarce = make_state(obs_no_hands, day=6, hour=0, tiles=tiles, shed={"WHEAT": 1})
     assert "WHEAT" not in economy.sell_plan(scarce)
 
 
-def test_excess_products_sell_immediately_without_speculation(obs_no_hands):
+def test_every_unit_without_internal_use_is_sold_or_held_with_a_reason(obs_no_hands):
+    """Milestone 5 sell/hold: units are sold now unless the price after the
+    next town tick beats today's marginal price by the uplift margin. Melon at
+    equilibrium gains nothing from one tick (log scarcity curve) and sells;
+    wheat's steep sqrt curve makes the 2nd/3rd unit worth holding one tick."""
     state = make_state(obs_no_hands, day=6, hour=0, shed={"WHEAT": 3, "MELON": 6, "EGG": 4})
-    assert economy.sell_plan(state) == {"WHEAT": 3, "MELON": 6, "EGG": 4}
-    # A higher or lower current price never causes holding for a better future price.
-    low = make_state(obs_no_hands, day=6, hour=0, shed={"MELON": 6}, prices={"MELON": 5})
+    outlooks = economy.market_outlooks(state)
+    plan = economy.sell_plan(state)
+    assert plan["MELON"] == 6 and plan["EGG"] == 4
+    # Wheat: 1st unit now (25) beats 26 after the tick within the 5% margin; the
+    # 2nd unit (24 now vs 26 later) is held; the 3rd (24 vs 25) is sold.
+    assert plan["WHEAT"] == 2 and outlooks["WHEAT"].hold == 1
+    assert "town tick" in outlooks["WHEAT"].reason
+    assert outlooks["WHEAT"].demand.town_center == 1  # this turn's tick (step 144)
+    for o in outlooks.values():
+        assert o.sell_now + o.hold == o.available
+    # A melon market crashed to the floor is sold now too: one tick cannot lift it.
+    low = make_state(
+        obs_no_hands, day=6, hour=0, shed={"MELON": 6}, inventory_market={"MELON": 10500}
+    )
+    assert low.market.prices["MELON"] == 1
     assert economy.sell_plan(low) == {"MELON": 6}
 
 
@@ -376,6 +395,15 @@ def test_nonessential_stock_sells_readily_under_shed_pressure(obs_no_hands):
     )
     assert shed_pressure(packed) == 1.0
     assert economy.sell_plan(packed) == {"FERTILIZER": 3, "EGG": 93}  # nothing held back but feed
+    # Under pressure (not emergency) only enough held units are released to drop
+    # below the pressure threshold, most glutted products first.
+    tight = make_state(obs_no_hands, day=6, hour=0, shed={"WHEAT": 60, "EGG": 27})
+    outlooks = economy.market_outlooks(tight)
+    assert shed_occupancy(tight) == 87
+    sold = sum(o.sell_now for o in outlooks.values())
+    assert shed_occupancy(tight) - sold <= 84
+    assert any("shed pressure" in o.reason for o in outlooks.values())
+    assert any(o.hold > 0 for o in outlooks.values())  # not an emergency: some units still held
 
 
 def test_final_day_releases_the_feed_reserve(obs_no_hands):
@@ -432,7 +460,6 @@ def test_no_future_model_leakage(obs_no_hands):
     base = make_state(obs_no_hands, day=1, hour=0)
     obs = copy.deepcopy(obs_no_hands)
     obs["farms"][1]["hidden_shed"] = {"MELON": 999}  # unknown key: ignored by the parser
-    obs["town"]["unlocked_shops"] = ["FARMERS_MARKET", "PET_CAFE", "YARN_STORE"]
     obs["farms"][1]["money"] = 999999.0
     altered = make_state(obs, day=1, hour=0)
     assert economy.rank_opportunities(altered) == economy.rank_opportunities(base)

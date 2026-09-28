@@ -527,3 +527,165 @@ def test_hand_inventory_is_dropped_into_the_shed_when_hands_vanish():
     obs = _p0(env, _farmer(env, hands=[["PASS"]]))
     assert obs["day"] == 1 and obs["farms"][0]["hands"] == []
     assert obs["private"]["shed"]["WHEAT"] == 2 and obs["private"]["inventories"] == [{}]
+
+
+# --- Market and town mechanics used by the Milestone 5 market model (§16-§20) ---------------
+
+
+def test_market_price_formula_matches_the_installed_environment():
+    from kaggle_environments.envs.kaggriculture.kaggriculture import (
+        MARKET_I0,
+        MARKET_PARAMS,
+        PRICE_FLOOR,
+        market_price,
+    )
+
+    from kaggriculture_bot import constants, economy
+
+    assert constants.MARKET_I0 == MARKET_I0 and constants.PRICE_FLOOR == PRICE_FLOOR
+    for product, p in MARKET_PARAMS.items():
+        keys = ("base", "T", "below_func", "below_target", "above_func", "above_target")
+        assert constants.MARKET_PARAMS[product] == tuple(p[k] for k in keys)
+        assert p["I0"] == MARKET_I0
+        # deep scarcity, moderate scarcity, equilibrium, moderate glut, severe glut, floor region
+        for inventory in (
+            0,
+            5000,
+            9000,
+            9900,
+            9999,
+            10000,
+            10001,
+            10100,
+            10500,
+            12000,
+            50000,
+            10**6,
+        ):
+            assert economy.market_price_at_inventory(product, inventory) == market_price(
+                product, inventory
+            ), (product, inventory)
+        assert economy.market_price_at_inventory(product, 10**7) == market_price(product, 10**7)
+    # Steep glut curves reach the floor inside the plausible range; log curves never do.
+    assert economy.market_price_at_inventory("MELON", 10500) == PRICE_FLOOR
+    assert market_price("MELON", 10500) == PRICE_FLOOR
+    assert economy.market_price_at_inventory("WOOL", 11000) == PRICE_FLOOR
+    assert economy.market_price_at_inventory("WHEAT", 10**7) > PRICE_FLOOR
+
+
+def test_bulk_buy_and_sell_realize_unit_by_unit_prices():
+    """BUY_PRODUCT quotes each unit at the post-buy inventory, SELL each unit at
+    the pre-sale inventory and adds it back to the market (§17)."""
+    from kaggriculture_bot import economy
+
+    env = _fresh_env()
+    obs = _p0(env, PASS_ACTION)  # step 0 is a town tick; trade on tick-free turns 1 and 2
+    inv0 = obs["market"]["inventory"]["WHEAT"]
+    cost, inv_after_buy = economy.estimate_buy_cost("WHEAT", 30, inv0)
+    obs = _p0(env, _farmer(env, market=[["BUY_PRODUCT", "WHEAT", 30]]))
+    assert obs["farms"][0]["money"] == 3000 - cost
+    assert obs["market"]["inventory"]["WHEAT"] == inv_after_buy == inv0 - 30
+    assert cost > 30 * economy.market_price_at_inventory("WHEAT", inv0 - 1)  # price climbed
+    revenue, inv_after_sell = economy.estimate_sell_revenue("WHEAT", 30, inv_after_buy)
+    obs = _p0(env, _farmer(env, market=[["SELL", "WHEAT", 30]]))
+    assert obs["farms"][0]["money"] == 3000 - cost + revenue
+    assert obs["market"]["inventory"]["WHEAT"] == inv_after_sell == inv0
+    assert revenue < 30 * economy.market_price_at_inventory("WHEAT", inv_after_buy)  # fell
+    assert obs["market"]["prices"]["WHEAT"] == economy.market_price_at_inventory("WHEAT", inv0)
+
+
+def test_sales_at_the_floor_price_do_not_add_market_supply():
+    from kaggriculture_bot import economy
+
+    env = _fresh_env()
+    _p0(env, PASS_ACTION)
+    # Put melons in our shed and crash the melon market (state edit for a mechanics probe).
+    env.state[0].observation["private"]["shed"]["MELON"] = 3
+    env.state[0].observation["market"]["inventory"]["MELON"] = 10500
+    obs = _p0(env, PASS_ACTION)  # step 1 -> 2 (no tick): prices refresh from the inventory
+    assert obs["market"]["prices"]["MELON"] == 1 and obs["step"] == 2
+    inv = obs["market"]["inventory"]["MELON"]
+    money = obs["farms"][0]["money"]
+    revenue, inv_est = economy.estimate_sell_revenue("MELON", 3, inv)
+    obs = _p0(env, _farmer(env, market=[["SELL", "MELON", 3]]))  # step 2: no town tick
+    assert obs["farms"][0]["money"] == money + 3 == money + revenue
+    assert obs["market"]["inventory"]["MELON"] == inv == inv_est  # floor sales add nothing
+
+
+def test_both_players_sell_in_lockstep_at_the_same_pre_commit_price():
+    """Player queues interleave one unit at a time; both units of a step are
+    quoted at the same inventory (§17)."""
+    from kaggriculture_bot import economy
+
+    env = _fresh_env()
+    buy = {"farmer": ["PASS"], "hands": [], "market": [["BUY_PRODUCT", "WHEAT", 2]]}
+    env.step([buy, buy])
+    inv = env.state[0].observation["market"]["inventory"]["WHEAT"]
+    m0, m1 = (env.state[i].observation["farms"][i]["money"] for i in (0, 1))
+    sell = {"farmer": ["PASS"], "hands": [], "market": [["SELL", "WHEAT", 2]]}
+    env.step([sell, sell])
+    farms = env.state[0].observation["farms"]
+    p_first = economy.market_price_at_inventory("WHEAT", inv)
+    p_second = economy.market_price_at_inventory("WHEAT", inv + 2)  # both first units landed
+    assert farms[0]["money"] - m0 == p_first + p_second == farms[1]["money"] - m1
+    # Our estimate for a lone seller of 2 differs: it assumes no interleaved counterparty.
+    lone, _ = economy.estimate_sell_revenue("WHEAT", 2, inv)
+    assert lone == p_first + economy.market_price_at_inventory("WHEAT", inv + 1)
+
+
+def test_town_consumption_runs_after_market_orders_on_a_tick_turn():
+    """Selling on a tick turn is priced before that tick's demand; the next
+    observation shows both effects (§20)."""
+    from kaggriculture_bot import economy
+
+    env = _fresh_env()
+    obs = _p0(env, _farmer(env, market=[["BUY_PRODUCT", "WHEAT", 5]]))  # step 0 (tick) -> step 1
+    while env.state[0].observation["step"] % 12 != 0:
+        obs = _p0(env, PASS_ACTION)
+    inv = obs["market"]["inventory"]["WHEAT"]
+    money = obs["farms"][0]["money"]
+    day = obs["day"]
+    revenue, inv_after_sale = economy.estimate_sell_revenue("WHEAT", 5, inv)
+    obs = _p0(env, _farmer(env, market=[["SELL", "WHEAT", 5]]))
+    assert obs["farms"][0]["money"] - money == revenue  # priced before the tick
+    assert obs["market"]["inventory"]["WHEAT"] == inv_after_sale - economy.town_center_units(day)
+    assert obs["market"]["prices"]["WHEAT"] == economy.market_price_at_inventory(
+        "WHEAT", obs["market"]["inventory"]["WHEAT"]
+    )
+
+
+def test_expected_town_demand_matches_observed_inventory_removal():
+    """Over 30 turns of a PASS-vs-PASS episode with known shops, the town model's
+    exact demand equals the observed inventory drawdown for every product."""
+    from kaggriculture_bot import economy
+    from kaggriculture_bot.parser import parse_observation
+
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 3}, debug=True)
+    env.run(["pass", "pass"])
+    for start in (0, 5, 84, 215, 240, 455, 480, 700):
+        horizon = 30 if start + 30 < 720 else 719 - start
+        obs = env.steps[start][0]["observation"]
+        later = env.steps[start + horizon][0]["observation"]
+        state = parse_observation(obs)
+        for product in economy.PRODUCTS:
+            demand = economy.expected_town_demand(state, product, horizon)
+            observed = obs["market"]["inventory"][product] - later["market"]["inventory"][product]
+            if demand.future_shops == 0.0:
+                assert demand.town_center + demand.known_shops == observed, (start, product)
+            else:  # shops unlocked inside the horizon: exact part is a lower bound
+                assert demand.town_center + demand.known_shops <= observed, (start, product)
+
+
+def test_plant_requests_beyond_held_seeds_are_all_dropped_for_that_crop():
+    """Atomic PLANT validation (interpreter): if a turn requests more PLANTs of a
+    crop than seeds held, every PLANT of that crop that turn becomes PASS."""
+    env = _fresh_env()
+    _p0(env, _farmer(env, market=[["BUY_SEED", "WHEAT", 1], ["HIRE"]]))
+    _p0(env, _farmer(env, hands=[["WEST"]]))  # hand (5,4) -> (4,4)
+    _p0(env, _farmer(env, farmer=["NORTH"]))  # farmer to (4,3)
+    obs = _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"], hands=[["PLANT", "WHEAT"]]))
+    tiles = obs["farms"][0]["tiles"]
+    assert tiles[3][4] is None and tiles[4][4] is None  # both dropped, seed kept
+    assert obs["private"]["seeds"]["WHEAT"] == 1
+    obs = _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"]))
+    assert isinstance(tiles := obs["farms"][0]["tiles"], list) and tiles[3][4]["crop"] == "WHEAT"
