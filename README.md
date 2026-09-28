@@ -70,7 +70,8 @@ missed watering, fresh plantings left unwatered, animals escaped), malformed
 outputs and per-turn timing. `control` is the same `main.agent` with only its
 `HIRE` market orders removed (`tools.harness.hiring_disabled`), the Milestone 4
 ablation control. `--opponent incumbent` plays the frozen champion
-(`agents.incumbent.agent`, the accepted Milestone 4 snapshot in
+(`agents.incumbent.agent`, the accepted Milestone 5 snapshot in
+`agents/incumbent_m5/`; the Milestone 4 champion stays frozen in
 `agents/incumbent_m4/`). The report also carries market diagnostics: realized
 sale prices per premium product (lockstep replay of both players' orders),
 premium purchases into glutted markets, glut-protection rejections and how
