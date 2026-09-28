@@ -276,9 +276,12 @@ No new top-level directory may be added without changing this file.
 │   ├── test_runtime.py
 │   └── test_submission.py
 │
-└── benchmarks/
-    ├── scenarios.json       # named deterministic scenario definitions
-    └── results/             # ignored generated reports; never imported by runtime
+├── benchmarks/
+│   ├── scenarios.json       # named deterministic scenario definitions
+│   └── results/             # ignored generated reports; never imported by runtime
+│
+└── docs/                    # durable human-readable project evidence/documentation (tracked)
+    └── milestones/          # accepted milestone audit/promotion reports
 ```
 
 ### What does not belong where
@@ -292,6 +295,7 @@ No new top-level directory may be added without changing this file.
 - `tools/`: never imported by submitted runtime.
 - `tests/`: never used as runtime configuration.
 - `agents/`: offline comparison agents only; never packaged. The incumbent snapshot never imports `main` or `kaggriculture_bot`, so candidate changes cannot alter the comparator, and it is never modified while a candidate is evaluated. Re-freezing happens only through an explicit promotion/snapshot commit.
+- `docs/`: durable, human-readable project evidence and supporting documentation kept in Git; `docs/milestones/` holds accepted milestone audit/promotion reports. Raw benchmark output (JSONL, logs, timing traces, other large generated evidence) stays in gitignored `benchmarks/results/` and is not moved into Git because `docs/` exists. Not part of the competition runtime or submission package; nothing in it may become a runtime dependency.
 
 ---
 
