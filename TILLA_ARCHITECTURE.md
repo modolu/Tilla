@@ -264,12 +264,13 @@ No new top-level directory may be added without changing this file.
 │
 ├── agents/
 │   ├── baseline.py          # stable simple baseline (frozen Milestone 2 snapshot)
-│   ├── incumbent.py         # frozen promoted champion adapter (Milestone 5): exposes agent(obs)
+│   ├── incumbent.py         # frozen promoted champion adapter (Milestone 6): exposes agent(obs)
 │   ├── incumbent_m4/        # frozen self-contained snapshot of the accepted Milestone 4
 │   │   ├── agent.py         #   runtime (copy of main.py + every kaggriculture_bot module,
 │   │   ├── *.py             #   imports rewritten to this package); own episode memory
 │   │   └── MANIFEST.sha256  #   byte-level freeze guard checked by tests/test_incumbent.py
-│   └── incumbent_m5/        # same construction for the accepted Milestone 5 runtime (5c3f1ef)
+│   ├── incumbent_m5/        # same construction for the accepted Milestone 5 runtime (5c3f1ef)
+│   └── incumbent_m6/        # same construction for the accepted Milestone 6 runtime (21195e7)
 │
 ├── tests/
 │   ├── fixtures/            # small hand-written observations
