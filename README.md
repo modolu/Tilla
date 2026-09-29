@@ -42,6 +42,7 @@ farm-care baseline (offline comparison only; never packaged):
 
 ```python
 from agents.baseline import agent as baseline_agent
+
 env.run([main.agent, baseline_agent])
 ```
 
@@ -77,19 +78,99 @@ sale prices per premium product (lockstep replay of both players' orders),
 premium purchases into glutted markets, glut-protection rejections and how
 often the town model changed the sell orders.
 
-## Promotion gate
+## Tournament and promotion gate
+
+`tools/tournament.py` plays paired, seat-swapped, seeded candidate-vs-incumbent
+episodes and evaluates them against the promotion gate of `TILLA_STRATEGY.md`
+§19 (explicit PASS/FAIL; a PASS never promotes or freezes anything by itself).
+
+Terms, used the same way in code, records and reports:
+
+- **episode**: one official 720-step game with the candidate in one seat;
+- **paired seed**: a seed played twice with the seats swapped
+  (`--stable 100000:1500` = 1,500 paired seeds = 3,000 episodes);
+- **completed pair**: a paired seed with exactly one valid episode for
+  candidate seat 0 and one for seat 1. Only completed pairs count.
+
+"At least 2,000 paired games" means **2,000 completed pairs = 4,000
+episodes** (formal plan: 1,500 stable + 500 holdout paired seeds). 1,000 seeds
+/ 2,000 episodes never satisfies the gate.
 
 ```bash
-python -m tools.tournament --seeds 10000 11499 --workers 3 --out benchmarks/results/gate.jsonl --resume
+# One command: play (or resume) stable, gate it, play the holdout only if the
+# stable partition is eligible, then write the full report.
+caffeinate -i python -m tools.tournament gate --run-dir benchmarks/results/<run> \
+    --candidate main:agent --incumbent agents.incumbent:agent \
+    --stable 100000:1500 --holdout-epoch 0 --holdout-count 500 \
+    --workers 4 --scenario-results <scenario-results.json>
+
+python -m tools.tournament status --run-dir benchmarks/results/<run>   # progress, no outcomes
+python -m tools.tournament report --run-dir benchmarks/results/<run>   # stable only
+python -m tools.tournament report --run-dir benchmarks/results/<run> --reveal-holdout
 ```
 
-Plays every seed in both seats, candidate `main.agent` vs the frozen incumbent,
-across worker processes (each finished game is appended to `--out` at once and
-`--resume` continues an interrupted run) and prints the TILLA_STRATEGY.md §19
-gate statistics
-(win rate, 95% Wilson lower bound, seat records, cash margins, pair-level
-margins, crashes/timeouts, care and duplicate-work guardrails, premium-product
-and town-model diagnostics) plus `gate_passes`.
+Formal flow: **stable → stable eligibility → holdout → combined verdict.**
+All stable episodes run first. The complete stable partition must pass its own
+eligibility gate (at least 1,500 completed pairs, clean integrity, and the
+statistical thresholds on its own); the decision is written to
+`stable_gate.json`. Only then is the holdout played or revealed. The final
+verdict uses the combined evidence, and stable, holdout and combined results
+are reported separately. A strong holdout never rescues an ineligible stable
+partition.
+
+The gate (policy recorded in the run manifest; a policy weaker than the Tilla
+default always fails) requires, with strict exact comparisons:
+
+- ≥ 2,000 completed pairs and ≥ 4,000 episodes in them (≥ 1,500 stable,
+  ≥ 500 holdout), every planned paired seed completed;
+- win rate `> 53%` (ties are not wins), Wilson 95% lower bound `> 50%`,
+  median terminal cash margin `> 0`;
+- zero candidate crashes, environment-enforced timeouts and invalid actions;
+- zero unresolved incumbent failures and zero harness errors, incomplete
+  episodes or duplicate results;
+- mandatory-scenario evidence with status `PASS`.
+
+Opponent and harness failures never count for the candidate: such an episode
+has no margin or outcome. It is replayed up to `--max-attempts` times; if it
+still fails it is recorded and blocks promotion. Candidate failures are never
+replayed.
+
+Scenario evidence is `PASS`, `FAIL` (a material regression) or
+`MISSING_EVIDENCE` (no results file, results for another candidate/incumbent,
+a scenario without a verdict, or an empty suite). Only `PASS` satisfies the
+gate. An empty `benchmarks/scenarios.json` is missing evidence, not a
+declaration that no mandatory scenarios exist; only an explicit policy flag
+(`mandatory_scenarios_declared_empty`) can declare that.
+
+Operational guarantees:
+
+- Entrypoints are `module:attr` importable from the repo root, or a built-in
+  (`pass`, `starter`, `random`; `random` is unseeded, so not reproducible).
+- The run directory must be persistent (`/tmp` and other temp roots are
+  refused). It holds `manifest.json` (config, policy and content hashes of the
+  candidate, incumbent, environment and runner), append-only
+  `results-stable.jsonl` / `results-holdout.jsonl`, `stable_gate.json`,
+  `events.jsonl`, `heartbeat.json`, `replays/` and `reports/`.
+- Interrupt with Ctrl-C (or SIGTERM) at any time and rerun the same command to
+  resume: finished episodes are never replayed or written twice, unfinished
+  ones are replayed. A second runner on the same directory is refused
+  (`flock`); changed code, config or policy is refused.
+- `report` without `--reveal-holdout` never opens the holdout results, and
+  the heartbeat/status never show outcomes. Revealing is logged in
+  `benchmarks/results/holdout_ledger.jsonl`; a holdout already revealed for
+  another candidate is flagged as reused.
+- Timing separates the agent call (as charged against `actTimeout` by
+  kaggle-environments), the whole turn, the whole episode, post-episode work,
+  worker startup and scheduling overhead, with p50/p95/p99/max. Timeouts mean
+  environment-enforced `TIMEOUT` statuses only; calls over `actTimeout`
+  absorbed by the overage bank are an advisory, not a gate failure. Episodes
+  that ran across a host sleep are flagged.
+- `--save-replays problems` (default) keeps replays of failed episodes only;
+  `losses` also keeps every loss (about 14 MB each).
+
+The Milestone 5-era helpers `tools.tournament.run`, `gate_report`,
+`gate_passes` and `wilson_lower_bound` remain importable for the recorded
+Milestone 5-7 gate tooling; new promotion runs use the `gate` command above.
 
 ## Regenerate observation fixtures
 
