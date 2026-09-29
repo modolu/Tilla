@@ -83,18 +83,52 @@ def _tile_is(tile, kind):
     return isinstance(tile, dict) and tile.get("kind") == kind
 
 
+def _harvested_one_time_crop(obs, action, seat: int, x: int, y: int) -> bool:
+    """A unit of ``seat`` stood on (x, y) and issued HARVEST on a harvestable
+    one-time crop this turn: the official HARVEST takes the whole yield and
+    empties the tile (TILLA_RULES.md §7), so the crop was not lost even if the
+    end-of-day weed spawn later puts a weed on the emptied tile."""
+    from kaggriculture_bot.constants import CROPS
+
+    tile = obs["farms"][seat]["tiles"][y][x]
+    spec = CROPS.get(tile.get("crop"))
+    if spec is None or spec.ongoing or tile.get("yield_units", 0) <= 0:
+        return False
+    if obs["day"] - tile["planted_day"] < spec.first_yield_day:
+        return False
+    if not isinstance(action, dict):
+        return False
+    farm = obs["farms"][seat]
+    units = [farm["farmer"], *farm["hands"]]
+    ops = [action.get("farmer"), *(action.get("hands") or [])]
+    return any(
+        list(unit) == [x, y] and isinstance(op, list) and op[:1] == ["HARVEST"]
+        for unit, op in zip(units, ops, strict=False)
+    )
+
+
 def _care_losses(steps, seat: int) -> dict[str, int]:
-    """Count avoidable losses on ``seat``'s farm across recorded steps."""
+    """Count avoidable losses on ``seat``'s farm across recorded steps.
+
+    ``steps[i + 1][seat]["action"]`` is the action applied between ``steps[i]``
+    and ``steps[i + 1]``. A one-time crop harvested on the day's last turn whose
+    emptied tile then gets a random end-of-day weed looks like PLANT -> WEED
+    across the refresh; it is recorded as ``harvested_then_weed_spawn``, never
+    as a crop lost to missed watering."""
     losses = Counter()
     for a, b in zip(steps, steps[1:], strict=False):
         oa, ob = a[0]["observation"], b[0]["observation"]
         ta, tb = oa["farms"][seat]["tiles"], ob["farms"][seat]["tiles"]
         day_changed = ob["day"] != oa["day"]
+        action = b[seat].get("action") if len(b) > seat else None
         for y in range(len(ta)):
             for x in range(len(ta[y])):
                 before, after = ta[y][x], tb[y][x]
                 if _tile_is(before, "PLANT") and _tile_is(after, "WEED"):
                     if day_changed and not before["watered_today"]:
+                        if _harvested_one_time_crop(oa, action, seat, x, y):
+                            losses["harvested_then_weed_spawn"] += 1
+                            continue
                         losses["crops_lost_unwatered"] += 1
                         if before["planted_day"] == oa["day"]:
                             losses["fresh_plantings_unwatered"] += 1

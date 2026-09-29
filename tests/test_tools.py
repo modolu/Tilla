@@ -1,5 +1,7 @@
 """Tests for the offline tooling contracts that Milestone 4 evidence relies on."""
 
+import pytest
+
 from tools.harness import hiring_disabled
 
 
@@ -110,3 +112,78 @@ def test_wilson_lower_bound_matches_reference_values():
     assert not gate_passes({**passing, "wilson_lower_95": 0.5})
     assert not gate_passes({**passing, "median_margin": 0.0})
     assert not gate_passes({**passing, "timeouts": 1})
+
+
+# --- Care-loss checker (offline harness) ----------------------------------------------------
+
+
+def _scripted_env(monkeypatch, always_spawn_weeds):
+    pytest.importorskip("kaggle_environments")
+    from kaggle_environments import make
+    from kaggle_environments.envs.kaggriculture import kaggriculture as kg
+
+    if always_spawn_weeds:
+
+        def spawn_everywhere(farm, board_size, weed_chance, rng):
+            for y in range(board_size):
+                for x in range(board_size):
+                    if farm["tiles"][y][x] is None:
+                        farm["tiles"][y][x] = {"kind": "WEED"}
+
+        monkeypatch.setattr(kg, "_spawn_weeds", spawn_everywhere)
+    env = make("kaggriculture", configuration={"episodeSteps": 720, "seed": 3}, debug=True)
+    env.reset()
+    return env
+
+
+PASS = {"farmer": ["PASS"], "hands": [], "market": []}
+
+
+def _p0(env, farmer=None, market=None):
+    env.step([{"farmer": farmer or ["PASS"], "hands": [], "market": market or []}, PASS])
+    return env.state[0].observation
+
+
+def test_hour_23_harvest_then_weed_spawn_is_not_a_care_loss(monkeypatch):
+    """Mature wheat harvested on the day's last turn: full yield is credited,
+    the emptied tile gets an end-of-day weed, and no care loss is counted."""
+    from kaggriculture_bot.constants import CROPS
+    from tools.harness import _care_losses
+
+    wheat = CROPS["WHEAT"]
+    env = _scripted_env(monkeypatch, always_spawn_weeds=True)
+    _p0(env, market=[["BUY_SEED", "WHEAT", 1]])
+    _p0(env, farmer=["PLANT", "WHEAT"])  # on (4,4), the farmer's spawn tile
+    _p0(env, farmer=["WATER"])  # planting day counts as unwatered: water it the same day
+    while env.state[0].observation["day"] <= wheat.max_yield_day:
+        obs = env.state[0].observation
+        if obs["hour"] == 23 and obs["day"] == wheat.max_yield_day:
+            tile = obs["farms"][0]["tiles"][4][4]
+            assert tile["kind"] == "PLANT" and tile["watered_today"] is False
+            harvested = tile["yield_units"]
+            after = _p0(env, farmer=["HARVEST"])  # last turn of the day, then the refresh
+            break
+        if obs["hour"] == 0 and 0 < obs["day"] < wheat.max_yield_day:
+            _p0(env, farmer=["WATER"])
+        else:
+            _p0(env)
+    assert after["farms"][0]["tiles"][4][4] == {"kind": "WEED"}  # official spawn on the empty tile
+    assert harvested >= 1 and after["private"]["shed"]["WHEAT"] == harvested  # full yield credited
+    losses = _care_losses(env.steps, 0)
+    assert losses.get("crops_lost_unwatered", 0) == 0
+    assert losses.get("fresh_plantings_unwatered", 0) == 0
+    assert losses["harvested_then_weed_spawn"] == 1
+
+
+def test_genuine_unwatered_death_is_still_a_care_loss(monkeypatch):
+    from tools.harness import _care_losses
+
+    env = _scripted_env(monkeypatch, always_spawn_weeds=False)
+    _p0(env, market=[["BUY_SEED", "WHEAT", 1]])
+    _p0(env, farmer=["PLANT", "WHEAT"])  # planting day counts as the first unwatered day
+    while env.state[0].observation["day"] < 2:
+        _p0(env)
+    assert env.state[0].observation["farms"][0]["tiles"][4][4] == {"kind": "WEED"}
+    losses = _care_losses(env.steps, 0)
+    assert losses["crops_lost_unwatered"] == 1
+    assert losses.get("harvested_then_weed_spawn", 0) == 0
