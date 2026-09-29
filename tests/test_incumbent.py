@@ -1,8 +1,8 @@
-"""Guards for the frozen incumbent snapshots (agents/incumbent_m4, _m5, _m6).
+"""Guards for the frozen incumbent snapshots (agents/incumbent_m4, _m5, _m6, _m7).
 
 Incumbents are comparison code: each must stay byte-identical to its freeze
 and must never import the mutable candidate runtime. ``agents.incumbent`` is
-the current champion (Milestone 6).
+the current champion (Milestone 7).
 """
 
 import ast
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SNAPSHOTS = tuple(ROOT / "agents" / f"incumbent_m{m}" for m in (4, 5, 6))
+SNAPSHOTS = tuple(ROOT / "agents" / f"incumbent_m{m}" for m in (4, 5, 6, 7))
 FORBIDDEN_ROOTS = {"kaggriculture_bot", "main", "tools", "tests", "benchmarks"}
 
 
@@ -55,8 +55,9 @@ def test_incumbent_adapter_exposes_the_snapshot_agent():
     from agents import incumbent
     from agents.incumbent_m4 import runtime as m4_runtime
     from agents.incumbent_m5 import runtime as m5_runtime
-    from agents.incumbent_m6 import agent as snapshot
     from agents.incumbent_m6 import runtime as m6_runtime
+    from agents.incumbent_m7 import agent as snapshot
+    from agents.incumbent_m7 import runtime as m7_runtime
     from kaggriculture_bot import runtime as cand_runtime
 
     assert incumbent.agent is snapshot.agent
@@ -65,12 +66,13 @@ def test_incumbent_adapter_exposes_the_snapshot_agent():
         id(m4_runtime._MEMORIES),
         id(m5_runtime._MEMORIES),
         id(m6_runtime._MEMORIES),
+        id(m7_runtime._MEMORIES),
         id(cand_runtime._MEMORIES),
     }
-    assert len(memories) == 4
+    assert len(memories) == 5
 
 
-@pytest.mark.parametrize("module", [f"agents.incumbent_m{m}.agent" for m in (4, 5, 6)])
+@pytest.mark.parametrize("module", [f"agents.incumbent_m{m}.agent" for m in (4, 5, 6, 7)])
 def test_incumbent_returns_legal_actions_for_official_fixtures(module):
     import importlib
 
@@ -85,7 +87,7 @@ def test_incumbent_returns_legal_actions_for_official_fixtures(module):
         assert validate_or_fallback(action, hands) == action
 
 
-@pytest.mark.parametrize("milestone, commit", [(5, "5c3f1ef"), (6, "21195e7")])
+@pytest.mark.parametrize("milestone, commit", [(5, "5c3f1ef"), (6, "21195e7"), (7, "6ed9030")])
 def test_snapshot_is_the_accepted_runtime(milestone, commit):
     """agents/incumbent_m<N> is the accepted runtime of that milestone with only
     its imports namespaced: same source modulo the package prefix."""
