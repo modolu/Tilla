@@ -87,7 +87,17 @@ def generate_jobs(state: GameState, plan: StrategicPlan) -> list[Job]:
                 found = nearest(tiles, unit.position, objective.targets)
                 if found is None:
                     continue
-                job = Job(JobKind.DELIVER, found[0], objective.priority, unit=unit.index)
+                if objective.deadline_hour is not None and (
+                    state.hour + found[1] < objective.deadline_hour - PROMOTION_SLACK_TURNS
+                ):
+                    continue  # a deadline delivery applies only to units whose drop is due
+                job = Job(
+                    JobKind.DELIVER,
+                    found[0],
+                    objective.priority,
+                    deadline_hour=objective.deadline_hour,
+                    unit=unit.index,
+                )
                 if job.key not in seen:
                     seen.add(job.key)
                     jobs.append(job)

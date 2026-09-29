@@ -136,6 +136,61 @@ def distance_to_shed(pos: Position, size: int) -> int:
     return min(abs(pos.x - p.x) + abs(pos.y - p.y) for p in shed_access_positions(size))
 
 
+def distance_to_usable_shed(farm: FarmState, pos: Position) -> int | None:
+    """Manhattan distance to the closest *usable* (unlocked) shed access tile,
+    or None when none is usable (a metric, not a path)."""
+    access = usable_shed_access(farm)
+    if not access:
+        return None
+    return min(abs(pos.x - p.x) + abs(pos.y - p.y) for p in access)
+
+
+# --- Final day (Milestone 7, TILLA_STRATEGY.md §17) ---------------------------------------
+
+
+def is_final_day(day: int) -> bool:
+    """No day refresh follows today's last turn: nothing that only pays off at
+    or after a refresh (feeding, ongoing-crop watering, fertilizer) has value."""
+    return day >= LAST_DAY
+
+
+def final_delivery_hour(hour_of_action: int, distance: int) -> int:
+    """Hour at which a unit acting on a tile ``distance`` steps from a usable
+    shed access tile at ``hour_of_action`` can DROP there (then SELL in the
+    same turn's market phase, TILLA_RULES.md §17, §20)."""
+    return hour_of_action + distance + 1
+
+
+def final_day_harvest_deadline(distance: int) -> int:
+    """Last hour a HARVEST/COLLECT on the final day can happen and still be
+    dropped and sold by the last turn (hour 23)."""
+    return TURNS_PER_DAY - 1 - distance - 1
+
+
+def final_day_water_useful(day: int, hour: int, plant: PlantTile, distance: int) -> bool:
+    """On the final day, WATER still pays only on a one-time crop inside its
+    bonus window below the yield cap (the bonus unit appears when watered,
+    TILLA_RULES.md §10) that can then be harvested and delivered today."""
+    spec = CROPS.get(plant.crop)
+    if spec is None or spec.ongoing or plant.watered_today:
+        return False
+    age = plant_age(day, plant)
+    if not (bonus_window_start(spec) <= age <= spec.max_yield_day):
+        return False
+    if plant.yield_units >= spec.max_yield:
+        return False
+    return hour <= final_day_harvest_deadline(distance) - 1  # water, then harvest next turn
+
+
+def final_day_harvestable(day: int, plant: PlantTile) -> bool:
+    """HARVEST succeeds today (TILLA_RULES.md §7): anything left on the field
+    at the end is lost, so on the final day partial yield is harvested too."""
+    spec = CROPS.get(plant.crop)
+    return (
+        spec is not None and plant.yield_units > 0 and plant_age(day, plant) >= spec.first_yield_day
+    )
+
+
 # --- Unit / inventory ------------------------------------------------------------------
 
 

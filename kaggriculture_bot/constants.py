@@ -222,6 +222,13 @@ OPPONENT_RECENT_HARVEST_TURNS = 24
 # Milestone 5 market model exactly. Never configured at runtime.
 OPPONENT_INFLUENCE = 1.0
 
+# --- Milestone 7 endgame policy (TILLA_STRATEGY.md §4 Phase D, §17) ----------------------
+
+# Offline ablation switch: True applies the final-day policy (no maintenance
+# whose only benefit is after the season, delivery deadlines); False reproduces
+# the Milestone 6 behaviour exactly. Never configured at runtime.
+ENDGAME_POLICY = True
+
 # --- Milestone 5 market and town parameters (TILLA_STRATEGY.md §13) -----------------------
 
 # Bounded public market history kept in EpisodeMemory (one snapshot per turn).

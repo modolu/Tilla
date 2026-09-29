@@ -27,6 +27,7 @@ from kaggriculture_bot import economy
 from kaggriculture_bot.constants import (
     ANIMALS,
     CROPS,
+    ENDGAME_POLICY,
     FERTILIZER,
     LAST_DAY,
     MAX_MARKET_ORDERS_PER_TURN,
@@ -42,8 +43,13 @@ from kaggriculture_bot.features import (
     carried,
     carried_total,
     distance_to_shed,
+    distance_to_usable_shed,
     empty_structures,
     empty_tiles,
+    final_day_harvest_deadline,
+    final_day_harvestable,
+    final_day_water_useful,
+    is_final_day,
     plant_at_risk,
     plant_decaying,
     plant_harvest_ready,
@@ -337,7 +343,90 @@ def hiring_decision(state: GameState, objectives: list[Objective], reserve: int)
     )
 
 
+def _final_day_work(state: GameState) -> list[Objective]:
+    """Final-day liquidation (Milestone 7, TILLA_STRATEGY.md §17). No refresh
+    follows today, so feeding, ongoing-crop watering and fertilizer have no
+    value. What still pays: WATER on a one-time crop whose bonus unit can be
+    harvested and delivered today, and HARVEST/COLLECT of everything that can
+    still be dropped and sold by the last turn. Each target carries its own
+    deadline (the last hour it can act and still reach a usable shed access
+    tile in time); targets already past it are dropped."""
+    farm, day, hour = state.me, state.day, state.hour
+    work: list[Objective] = []
+
+    def add(kind, pos, deadline, priority):
+        if deadline is None or hour <= deadline:
+            work.append(Objective(kind, (pos,), None, None, deadline, priority))
+
+    def deadline_of(pos, offset=0):
+        distance = distance_to_usable_shed(farm, pos)
+        return None if distance is None else final_day_harvest_deadline(distance) - offset
+
+    for pos, plant in sorted(plants(farm), key=lambda item: (item[0].y, item[0].x)):
+        distance = distance_to_usable_shed(farm, pos)
+        if distance is not None and final_day_water_useful(day, hour, plant, distance):
+            add(ObjectiveKind.WATER_CROP, pos, deadline_of(pos, 1), PRIORITY_DAILY_WORK)
+        elif final_day_harvestable(day, plant):
+            tier = PRIORITY_SURVIVAL if plant_decaying(day, plant) else PRIORITY_DAILY_WORK
+            add(ObjectiveKind.HARVEST, pos, deadline_of(pos), tier)
+    for pos, tile in animals(farm):
+        if tile.animal is not None and tile.animal.yield_units > 0:
+            add(ObjectiveKind.HARVEST, pos, deadline_of(pos), PRIORITY_DAILY_WORK)
+    for pos, tile in animals(farm):
+        if animal_fertilizer_ready(tile):
+            add(ObjectiveKind.COLLECT_FERTILIZER, pos, deadline_of(pos), PRIORITY_DAILY_WORK)
+    work.sort(key=lambda o: o.priority)  # stable: survival first, then (y, x) order
+    return work
+
+
 def choose_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
+    if ENDGAME_POLICY and is_final_day(state.day):
+        return _final_day_plan(state, memory)
+    return _plan(state, memory)
+
+
+def _final_day_plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
+    """The last day: final-day work, then deliveries. A carrying unit whose
+    drop is due (one turn of slack) delivers ahead of everything else; the
+    others deliver as before. No feed purchases; sales and hires as usual."""
+    farm = state.me
+    objectives: list[Objective] = []
+    access = usable_shed_access(farm)
+    carrying = any(carried_total(u) > 0 for u in farm.units)
+    if carrying and access:
+        objectives.append(
+            Objective(
+                ObjectiveKind.DELIVER, access, None, None, TURNS_PER_DAY - 1, PRIORITY_SURVIVAL
+            )
+        )
+    objectives.extend(_final_day_work(state))
+    claimed: set[Position] = set()
+    objectives.extend(_started_work(state, claimed, memory))
+    if carrying and access:
+        objectives.append(Objective(ObjectiveKind.DELIVER, access, priority=PRIORITY_DELIVERY))
+    reserve = economy.cash_reserve(state)
+    econ_objectives, econ_orders = _economic_tier(state, memory, reserve, claimed)
+    objectives.extend(econ_objectives)
+    committed = sum(economy.order_cost(state, o) for o in econ_orders)
+    decision = hiring_decision(state, objectives, reserve + committed)
+    hire_orders = [MarketOrder(MarketOp.HIRE) for _ in range(decision.hires)]
+    delivering = any(o.kind is ObjectiveKind.DELIVER for o in objectives)
+    market = _sell_orders(state, memory, delivering, 0) + list(econ_orders) + hire_orders
+    market = market[:MAX_MARKET_ORDERS_PER_TURN]
+    hires = sum(1 for o in market if o.op is MarketOp.HIRE)
+    objectives.sort(key=lambda o: o.priority)  # stable within a tier
+    top = objectives[0] if objectives else PASS_OBJECTIVE
+    same_tier = tuple(o for o in objectives[1:] if o.priority == top.priority)
+    return StrategicPlan(
+        objective=top,
+        market=tuple(market),
+        equal_priority=same_tier,
+        objectives=tuple(objectives),
+        hires=hires,
+    )
+
+
+def _plan(state: GameState, memory: EpisodeMemory) -> StrategicPlan:
     farm = state.me
     day = state.day
     our_plants = plants(farm)

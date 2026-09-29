@@ -130,6 +130,8 @@ Biases:
 - sell inventory even at suboptimal prices if there is insufficient time for credible recovery;
 - never finish with valuable sellable inventory because of avoidable logistics.
 
+The final day (day 29) has its own policy (§17 "Milestone 7 final-day policy").
+
 Phase boundaries may move later only through benchmarked policy changes.
 
 ---
@@ -679,6 +681,22 @@ From day 27 onward:
 
 A beautiful farm that loses on bank is a failed strategy.
 
+### Milestone 7 final-day policy (candidate; pending promotion)
+
+No day refresh follows the last turn of day 29 (`LAST_DAY`), so work whose only benefit arrives at or after a refresh has no value, and anything not sold by the last turn is lost. On day 29 only (`strategy._final_day_plan`, switched by `ENDGAME_POLICY`):
+
+| Rule | Behaviour | Why |
+|---|---|---|
+| No feeding | no FEED objectives and no wheat purchase for feeding; feed wheat is not reserved (already 0 on the final day) | escape and care bonus act only at a refresh |
+| Ineffective watering suppressed | no WATER on ongoing crops; WATER on a one-time crop only when it is inside its bonus window below the yield cap (the bonus unit appears when watered, TILLA_RULES.md §10) and can still be harvested the next turn and delivered (`hour <= 22 - d - 1`, `d` = Manhattan distance to the nearest usable shed access tile); its harvest waits for that watering | production and bonuses beyond today never realize |
+| Harvest everything sellable | HARVEST any plant with yield from its first yield day (partial one-time yield included) and any animal product; COLLECT waiting fertilizer | whatever stays on the field is lost |
+| Delivery deadline | each HARVEST/COLLECT target carries `deadline_hour = 22 - d`; targets past it are dropped (the product could no longer be dropped and sold) | no labour spent on goods that cannot reach the market |
+| Deadline delivery | a carrying unit whose drop is due (`hour + distance >= 23 - PROMOTION_SLACK_TURNS`) gets a DELIVER job at survival priority with `deadline_hour = 23`; other carrying units deliver at the usual delivery priority | carried goods are sold, not stranded |
+| Same-step sale | a unit on a shed access tile DROPs and the same turn's market sells it (TILLA_RULES.md §17, §20), including step 719 | the last turn still realizes cash |
+| Unchanged | no FERTILIZE or new investment qualifies on day 29 (payback formulas unchanged); sales, hires and started work as before | scope is logistics only |
+
+`ENDGAME_POLICY = False` (offline ablation) reproduces the Milestone 6 plan exactly. Days 0–28 are behaviourally identical to Milestone 6. Land expansion and broader scaling-phase changes are out of scope for Milestone 7.
+
 ---
 
 ## 18. Fallback behavior
@@ -750,7 +768,7 @@ SHED_PRESSURE_START = 85
 SHED_EMERGENCY = 95
 ```
 
-Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters". Milestone 5 market and town parameters are documented in §13 "Initial Milestone 5 market and town parameters". Milestone 6 opponent-model parameters (candidate, pending promotion) are documented in §15 "Milestone 6 opponent-model parameters".
+Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters". Milestone 5 market and town parameters are documented in §13 "Initial Milestone 5 market and town parameters". Milestone 6 opponent-model parameters (candidate, pending promotion) are documented in §15 "Milestone 6 opponent-model parameters". The Milestone 7 final-day policy (candidate, pending promotion) is documented in §17 "Milestone 7 final-day policy".
 
 Do not scatter these values through strategy code. Define them once in `constants.py` and document changes here with benchmark evidence.
 
