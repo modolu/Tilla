@@ -102,7 +102,22 @@ Rewrites `tests/fixtures/obs_*.json` from seeded official episodes.
 ## Package for submission
 
 ```bash
-python -m tools.package_submission submission.tar.gz
+python -m tools.package_submission submission.tar.gz          # build + validate + smoke
+python -m tools.package_submission --validate-only submission.tar.gz
 ```
 
-The archive root contains `main.py` and `kaggriculture_bot/` only.
+The archive root contains `main.py` and `kaggriculture_bot/*.py` only. The
+build is deterministic (sorted entries, normalized tar metadata, no gzip name
+or timestamp), so identical sources give a byte-identical archive. Validation
+rejects anything else (tests, benchmarks, tools, agents, docs, caches, VCS or
+virtualenv files, symlinks, path traversal, duplicate or case-colliding paths,
+nested or missing `main.py`, missing package), statically audits the packaged
+runtime (Python 3.11 syntax; standard-library imports only; no network,
+subprocess, dynamic execution, file access or local absolute paths), then
+extracts the archive into a fresh temporary directory and imports it from a new
+`python -I -S` process (no site-packages or editable installs), reporting any
+module that resolved from outside the archive. A smoke `agent()` call runs on
+`tests/fixtures/obs_midgame_p1_populated.json` unless `--no-smoke` is given.
+The JSON report carries the archive SHA-256, compressed/uncompressed sizes and
+a per-file manifest (path, bytes, SHA-256); the exit status is 0 only if every
+check passes.
