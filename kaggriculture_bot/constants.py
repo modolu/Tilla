@@ -192,9 +192,35 @@ MAX_DAILY_HIRES = 6
 # scheduled ahead of routine work when the other units can cover that work.
 PROMOTION_SLACK_TURNS = 1
 
-# Bound on retained opponent summaries in EpisodeMemory (implementation
-# parameter, not a game rule). Summaries themselves arrive with Milestone 6.
+# Bound on retained opponent harvest events in EpisodeMemory (implementation
+# parameter, not a game rule): one event per product per turn, so 64 covers
+# every product's events over the OPPONENT_RECENT_HARVEST_TURNS window.
 OPPONENT_HISTORY_LIMIT = 64
+
+# --- Milestone 6 opponent-model parameters (TILLA_STRATEGY.md §15) -----------------------
+#
+# Initial, benchmark-tunable strategy choices, not game rules. Mechanics used
+# by the model (crop/animal timing, yield caps) are the official tables above.
+
+# Weight applied to an estimate's units by confidence, i.e. how likely the
+# output is to materialize and be sold. HIGH: harvestable on a tile now, yet the
+# opponent may hold, feed or delay it; MEDIUM: visibly maintained production
+# still growing (or harvested units whose sale is unseen); LOW: at risk of dying
+# or escaping, visibly neglected, or further away than one crop cycle.
+# Timing is not confidence: when output arrives is the realization window.
+OPPONENT_CONFIDENCE_WEIGHTS = {"HIGH": 0.8, "MEDIUM": 0.5, "LOW": 0.2}
+# Scheduled production further than this many days ahead is LOW: beyond the
+# longest crop cycle (melon, 12 days) the opponent's plans are unobservable.
+OPPONENT_FORECAST_DAYS = 12
+# Output that becomes harvestable is assumed to reach the market uniformly over
+# this many turns from the moment it is available (one day of harvest/delivery).
+OPPONENT_REALIZATION_WINDOW_TURNS = 24
+# Harvested opponent units (RECENT_HARVEST) stay a pressure candidate for this
+# many turns after the harvest is seen, minus the market inflow observed since.
+OPPONENT_RECENT_HARVEST_TURNS = 24
+# Offline ablation switch: 1.0 applies opponent pressure, 0.0 reproduces the
+# Milestone 5 market model exactly. Never configured at runtime.
+OPPONENT_INFLUENCE = 1.0
 
 # --- Milestone 5 market and town parameters (TILLA_STRATEGY.md §13) -----------------------
 

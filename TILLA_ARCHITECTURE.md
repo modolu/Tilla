@@ -192,8 +192,11 @@ EpisodeMemory
 - player_id: int
 - last_step: int
 - previous_market_inventory: dict[str, int]
-- opponent_history: bounded summaries only
-- inferred_opponent_pipeline: dict[str, float]
+- opponent_history: deque[OpponentHarvestEvent]  # bounded (OPPONENT_HISTORY_LIMIT), newest last
+- inferred_opponent_pipeline: dict[str, float]    # diagnostic: weighted units due within a day
+- opponent_visible_yield: dict[(x, y), (product, units, ongoing)]  # previous turn, ≤ board tiles
+- opponent_step: int                               # step the forecast below belongs to
+- opponent_forecast: dict[str, tuple[OpponentPipelineEstimate, ...]]  # this turn, by product
 - current_plan: StrategicPlan | None
 - plan_created_step: int | None
 - unit_assignments: dict[int, Job]   # unit index -> job it is walking to / working on
@@ -202,6 +205,8 @@ EpisodeMemory
 ```
 
 `market_history` (Milestone 5) is the bounded public market record behind the aggregate flow estimate: one `MarketSnapshot(step, day, inventory, unlocked_shops)` per observed turn, newest last, capped at `MARKET_HISTORY_TURNS = 24`; inventories are copies (never aliases of the observation) and the deque is emptied with the rest of the memory at `step == 0`. It records shared public state only; nothing in it is attributed to the opponent.
+
+The opponent fields (Milestone 6) are written only by `opponent.update_model`, once per turn before strategy: harvests detected between consecutive observed turns are appended to `opponent_history` (one `OpponentHarvestEvent(step, product, units)` per product per turn), the previous turn's visible yield per opponent tile is replaced, and the forecast is rebuilt from the public opponent farm. `OpponentPipelineEstimate(product, source, units, earliest/likely/latest step, confidence, position, reason)` is an estimate with an explicit `Confidence` (HIGH/MEDIUM/LOW); `economy` reads the forecast only for the current `opponent_step`, so a caller without it gets the Milestone 5 market model. Nothing here records or reconstructs opponent private inventory.
 
 `Job` is the task planner's unit of work: `(kind, target, priority, item, quantity, deadline_hour, requires, unit)` with a stable `key` `(kind, x, y, item, unit)` so the same job is recognised across turns. `unit_assignments` is the only strategic memory the task layer reads and writes (movement-to-task persistence); hands vanish and the farmer respawns at the day refresh, so nothing in it survives a day boundary.
 
@@ -497,6 +502,8 @@ Opponent modelling is deterministic and based only on public observations:
 - timing of visible farm transitions.
 
 The model may estimate likely future supply per product, but estimates must carry confidence. Low-confidence estimates should adjust opportunity scores mildly, not trigger irreversible all-in decisions.
+
+Implementation (Milestone 6): `opponent.py` builds typed `OpponentPipelineEstimate`s from the public opponent farm (plants, animals, their care state and on-tile yield) plus bounded harvest detection, and never reads opponent unit inventories (`None`) or any private block. `economy.opponent_supply` is the only consumer: confidence-weighted, time-windowed pressure added to the Milestone 5 projected market inventory. It does not touch survival, care or task allocation. Parameters and rationale: `TILLA_STRATEGY.md` §15.
 
 Do not attempt identity-level modelling across Kaggle opponents or episodes.
 

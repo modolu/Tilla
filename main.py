@@ -6,6 +6,7 @@ structurally valid PASS fallback.
 """
 
 from kaggriculture_bot.actions import build_action, fallback_pass_action
+from kaggriculture_bot.opponent import update_model
 from kaggriculture_bot.parser import parse_observation
 from kaggriculture_bot.runtime import get_episode_memory, remember_turn
 from kaggriculture_bot.strategy import choose_plan
@@ -16,15 +17,15 @@ from kaggriculture_bot.validator import validate_or_fallback
 def agent(obs):
     """Return one Kaggriculture action dict for the current observation.
 
-    parse -> episode memory -> strategy plan -> task assignment -> format ->
-    validate. Features/opponent/economy layers join this chain in later
-    milestones.
+    parse -> episode memory -> opponent forecast -> strategy plan (features,
+    economy) -> task assignment -> format -> validate.
     """
     hand_count = 0
     try:
         state = parse_observation(obs)
         hand_count = len(state.me.hands)
         memory = get_episode_memory(state.player_id, state.step)
+        update_model(state, memory)
         plan = choose_plan(state, memory)
         turn = assign_jobs(state, plan, memory)
         action = validate_or_fallback(build_action(turn), hand_count)

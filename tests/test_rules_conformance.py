@@ -689,3 +689,40 @@ def test_plant_requests_beyond_held_seeds_are_all_dropped_for_that_crop():
     assert obs["private"]["seeds"]["WHEAT"] == 1
     obs = _p0(env, _farmer(env, farmer=["PLANT", "WHEAT"]))
     assert isinstance(tiles := obs["farms"][0]["tiles"], list) and tiles[3][4]["crop"] == "WHEAT"
+
+
+# --- Opponent visibility and HARVEST semantics used by Milestone 6 (TILLA_RULES.md §2, §7) ---
+
+
+def test_opponent_farm_is_public_and_harvest_zeroes_animal_yield_in_place():
+    """The other seat sees our plant/animal tile fields (public farm) but no
+    private data of ours; HARVEST on an animal takes every unit and leaves the
+    animal on its tile with yield_units 0."""
+    from kaggriculture_bot.constants import ANIMALS
+
+    goose = ANIMALS["GOOSE"]
+    env = _fresh_env()
+    _p0(env, _farmer(env, market=[["BUY_ANIMAL", "GOOSE", 1], ["BUY_PRODUCT", "WHEAT", 12]]))
+    _p0(env, _farmer(env, farmer=["PICKUP", "GOOSE", 1]))
+    _p0(env, _farmer(env, farmer=["BUILD_COOP"]))
+    _p0(env, _farmer(env, farmer=["PLACE", "GOOSE"]))
+    while env.state[0].observation["day"] < goose.first_yield_day + 1:
+        obs = env.state[0].observation
+        if obs["hour"] == 0:
+            _p0(env, _farmer(env, farmer=["PICKUP", "WHEAT", 1]))
+        elif obs["hour"] == 1:
+            _p0(env, _farmer(env, farmer=["FEED"]))
+        else:
+            _p0(env, PASS_ACTION)
+    seen_by_p1 = env.state[1].observation
+    tile = seen_by_p1["farms"][0]["tiles"][4][4]
+    assert tile["animal"] == "GOOSE" and tile["yield_units"] >= 1
+    assert {"placed_day", "fed_today", "consecutive_unfed"} <= set(tile)
+    # Seat 1's private block is its own: its shed holds none of player 0's goods.
+    assert seen_by_p1["private"]["shed"].get("WHEAT", 0) == 0
+    assert set(seen_by_p1["private"]) == {"shed", "seeds", "inventories"}
+    units = tile["yield_units"]
+    obs = _p0(env, _farmer(env, farmer=["HARVEST"]))
+    tile = obs["farms"][0]["tiles"][4][4]
+    assert tile["animal"] == "GOOSE" and tile["yield_units"] == 0
+    assert obs["private"]["inventories"][0].get("EGG", 0) == units

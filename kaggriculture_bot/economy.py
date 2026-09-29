@@ -11,9 +11,11 @@ equation from TILLA_STRATEGY.md §7::
 
 Inputs are the typed ``GameState`` and verified mechanics only (crop/animal
 tables, current observable market prices, remaining season, our own farm and
-shed). Market-glut and phase terms are neutral parameters until the market
-(M5) and opponent (M6) models exist. No movement, no action formatting, no
-opponent inference, no hidden state.
+shed), the Milestone 5 market model, and the Milestone 6 opponent pipeline
+estimates produced by ``opponent.py`` (consumed as confidence-weighted market
+pressure, never as knowledge of opponent private state). The phase term is
+neutral until the phase engine (M7). No movement, no action formatting, no
+hidden state.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from kaggriculture_bot.constants import (
     MAX_DAILY_HIRES,
     MAX_SCARCITY_UPLIFT_FRACTION,
     MIN_HAND_USEFUL_ACTIONS,
+    OPPONENT_INFLUENCE,
     PHASE_WEIGHT,
     PLANNED_DAILY_HANDS,
     PLANT_DAILY_ACTIONS,
@@ -61,7 +64,6 @@ from kaggriculture_bot.constants import (
     SHOP_SELL_INTERVAL,
     SHOP_UNLOCK_INTERVAL,
     SHOPS,
-    TOWN_CENTER_DEMAND_SCHEDULE,
     TOWN_CENTER_INTERVAL,
     TOWN_CENTER_PRODUCTS,
     TREND_CAP_FRACTION_OF_T,
@@ -74,18 +76,25 @@ from kaggriculture_bot.constants import (
 )
 from kaggriculture_bot.features import (
     animals,
+    bonus_window_start,
     can_act_from,
     empty_structures,
     empty_tiles,
     hand_spawn_positions,
+    market_residuals,
     min_cash_reserve,
+    one_time_harvest_age,
+    one_time_units_at_age,
     plant_age,
     plants,
     shed_occupancy,
     shed_pressure,
+    shop_units,
+    town_center_units,
     unlocked_tile_count,
 )
 from kaggriculture_bot.models import (
+    Confidence,
     EpisodeMemory,
     GameState,
     HiringDecision,
@@ -100,6 +109,7 @@ from kaggriculture_bot.models import (
     TileKind,
     TownDemand,
 )
+from kaggriculture_bot.opponent import confidence_weight, realization_share
 
 # The last day on which a harvest still leaves time to deliver and sell.
 LAST_HARVEST_DAY = LAST_DAY - 1
@@ -132,9 +142,10 @@ def order_cost(state: GameState, order: MarketOrder) -> int:
 # --- Market model (Milestone 5; TILLA_RULES.md §16-§19, TILLA_STRATEGY.md §13-§14) ----------
 #
 # Everything here is a deterministic estimate from the public shared-market
-# state, verified town mechanics and our own farm. It never uses opponent
-# private state or opponent farm state (M6 owns opponent attribution) and it
-# never assumes the opponent's same-turn market queue.
+# state, verified town mechanics, our own farm and (Milestone 6) the opponent
+# pipeline forecast built by opponent.py from the public opponent farm. It
+# never uses opponent private state and never assumes the opponent's same-turn
+# market queue.
 
 
 def _shape(func: str, x: float) -> float:
@@ -207,20 +218,6 @@ def estimate_buy_cost(
     return cost, inventory
 
 
-def town_center_units(day: int) -> int:
-    for first_day, units in TOWN_CENTER_DEMAND_SCHEDULE:
-        if day >= first_day:
-            return units
-    return 0
-
-
-def shop_units(shop: str, product: str) -> int:
-    products = SHOPS[shop]
-    if product not in products:
-        return 0
-    return 2 if len(products) == 1 else 1
-
-
 def unknown_shop_unlocks(day: int, until_day: int, already: int) -> int:
     """Shops that will have unlocked by ``until_day`` whose identity is not yet
     observable: one unlocks at the end of every day d with (d + 1) % 3 == 0,
@@ -268,17 +265,7 @@ def market_trend(memory: EpisodeMemory | None, product: str) -> float:
     if memory is None or len(memory.market_history) < 2:
         return 0.0
     snaps = list(memory.market_history)[-(TREND_WINDOW_TURNS + 1) :]
-    residuals: list[float] = []
-    for before, after in zip(snaps, snaps[1:], strict=False):
-        if after.step != before.step + 1:
-            continue  # gap in observations: no delta
-        delta = after.inventory.get(product, 0) - before.inventory.get(product, 0)
-        town = 0
-        if before.step % SHOP_SELL_INTERVAL == 0:
-            town += sum(shop_units(shop, product) for shop in before.unlocked_shops)
-        if before.step % TOWN_CENTER_INTERVAL == 0 and product in TOWN_CENTER_PRODUCTS:
-            town += town_center_units(before.day)
-        residuals.append(delta + town)
+    residuals = [float(r) for _, r in market_residuals(snaps, product)]
     if not residuals:
         return 0.0
     residuals.sort()
@@ -286,6 +273,37 @@ def market_trend(memory: EpisodeMemory | None, product: str) -> float:
     median = residuals[mid] if len(residuals) % 2 else (residuals[mid - 1] + residuals[mid]) / 2
     cap = TREND_CAP_FRACTION_OF_T * MARKET_PARAMS[product][1]
     return max(-cap, min(cap, median)) * TREND_DAMPING
+
+
+def opponent_supply(
+    state: GameState, memory: EpisodeMemory | None, product: str, horizon_turns: int
+) -> float:
+    """Confidence-weighted opponent output expected to reach the market within
+    ``horizon_turns`` turns (Milestone 6, TILLA_STRATEGY.md §15):
+
+        sum(units x confidence weight x realization share by the sale turn)
+        x OPPONENT_INFLUENCE
+
+    Only this turn's forecast from opponent.update_model counts (0 otherwise, so
+    callers without it get the Milestone 5 model). LOW-confidence estimates are
+    ignored for premium products: premium decisions react to MEDIUM/HIGH evidence
+    only. An estimate, never a claim about the opponent's private inventory."""
+    if memory is None or OPPONENT_INFLUENCE <= 0 or memory.opponent_step != state.step:
+        return 0.0
+    items = memory.opponent_forecast.get(product, ())
+    if not items:
+        return 0.0
+    sale_step = state.step + max(0, horizon_turns)
+    premium = product in PREMIUM_PRODUCTS
+    total = 0.0
+    for est in items:
+        if est.earliest_step > sale_step:
+            break  # stable order: every later estimate realizes after the sale
+        if premium and est.confidence is Confidence.LOW:
+            continue
+        share = realization_share(est.earliest_step, est.latest_step, sale_step)
+        total += est.units * confidence_weight(est.confidence) * share
+    return total * OPPONENT_INFLUENCE
 
 
 def projected_inventory(
@@ -297,10 +315,20 @@ def projected_inventory(
 ) -> int:
     """Market inventory expected ``horizon_turns`` turns from now: current stock
     plus the damped aggregate trend, minus expected town demand, plus
-    ``extra_supply`` (our own units expected to be sold into it first)."""
+    ``extra_supply`` (our own units expected to be sold into it first), plus
+    visible opponent supply beyond what a positive aggregate trend already
+    projects (the trend and the opponent pipeline are two views of the same
+    inflow, so the larger one counts, never their sum)."""
     demand = expected_town_demand(state, product, horizon_turns)
     trend = market_trend(memory, product) * min(horizon_turns, TREND_MAX_EXTRAPOLATION_TURNS)
-    inv = state.market.inventory.get(product, MARKET_I0) + trend - demand.total + extra_supply
+    opponent = max(0.0, opponent_supply(state, memory, product, horizon_turns) - max(0.0, trend))
+    inv = (
+        state.market.inventory.get(product, MARKET_I0)
+        + trend
+        - demand.total
+        + extra_supply
+        + opponent
+    )
     return max(0, int(round(inv)))
 
 
@@ -341,7 +369,7 @@ def own_supply(state: GameState, product: str, horizon_turns: int) -> int:
                     units += 1
             units += plant.yield_units
         else:
-            harvest_age = min(spec.max_yield_day, bonus_window_start(spec) + spec.max_yield - 2)
+            harvest_age = one_time_harvest_age(spec)
             if age + horizon_days >= max(harvest_age, spec.first_yield_day):
                 units += max(plant.yield_units, one_time_units_at_age(spec, harvest_age))
             elif age >= spec.first_yield_day:
@@ -525,18 +553,6 @@ class CropPlan:
     reason: str = ""
 
 
-def bonus_window_start(spec: CropSpec) -> int:
-    return (spec.max_yield_day + 1) // 2
-
-
-def one_time_units_at_age(spec: CropSpec, age: int) -> int:
-    """Yield of a daily-watered, unfertilized one-time crop harvested at ``age``."""
-    if age < spec.first_yield_day:
-        return 0
-    bonus_days = max(0, min(age, spec.max_yield_day) - bonus_window_start(spec) + 1)
-    return min(spec.max_yield, 1 + bonus_days)
-
-
 def plan_crop(spec: CropSpec, day: int) -> CropPlan:
     last_age = LAST_HARVEST_DAY - day
     if spec.ongoing:
@@ -548,8 +564,7 @@ def plan_crop(spec: CropSpec, day: int) -> CropPlan:
         return CropPlan(len(realizable), last, realizable[0], last + 1, len(realizable), True)
     # One-time: harvest as soon as the yield cap is reached, else at max_yield_day,
     # else at the latest age the season still allows (partial yield).
-    cap_age = bonus_window_start(spec) + spec.max_yield - 2
-    harvest_age = min(spec.max_yield_day, cap_age, last_age)
+    harvest_age = min(one_time_harvest_age(spec), last_age)
     if harvest_age < spec.first_yield_day:
         return CropPlan(0, 0, 0, 0, 0, False, "cannot reach first yield before season end")
     units = one_time_units_at_age(spec, harvest_age)

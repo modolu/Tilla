@@ -320,6 +320,57 @@ class MarketOutlook:
     anchor: int = 0  # observed price minus formula price at the observed inventory
 
 
+# --- Opponent model (Milestone 6) -----------------------------------------------------------
+
+
+class Confidence(StrEnum):
+    """How strongly visible opponent state supports a supply estimate
+    (weights in constants.OPPONENT_CONFIDENCE_WEIGHTS, TILLA_STRATEGY.md §15)."""
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class PipelineSource(StrEnum):
+    """Which observation supports an opponent supply estimate."""
+
+    READY_CROP = "READY_CROP"  # harvestable yield visible on an opponent plant tile
+    GROWING_CROP = "GROWING_CROP"  # visible opponent plant, output not yet harvestable
+    READY_ANIMAL = "READY_ANIMAL"  # product visible on an opponent animal tile
+    SCHEDULED_ANIMAL = "SCHEDULED_ANIMAL"  # future production of a visible opponent animal
+    RECENT_HARVEST = "RECENT_HARVEST"  # visible yield that disappeared from a tile (harvested)
+
+
+@dataclass(frozen=True)
+class OpponentPipelineEstimate:
+    """An estimate (never a fact) of opponent output that may reach the shared
+    market. Turns are absolute steps; the output is assumed to realize uniformly
+    over ``[earliest_step, latest_step]`` and ``likely_step`` is the window's
+    midpoint. ``units`` is the visible or scheduled quantity before weighting."""
+
+    product: str
+    source: PipelineSource
+    units: int
+    earliest_step: int
+    likely_step: int
+    latest_step: int
+    confidence: Confidence
+    position: Position | None = None  # opponent tile the estimate comes from
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class OpponentHarvestEvent:
+    """Visible opponent yield of ``product`` that disappeared from its tiles
+    through harvest between the previous turn and ``step`` (summed over tiles).
+    Where the units went (carried, shed, fed to animals) is unobservable."""
+
+    step: int
+    product: str
+    units: int
+
+
 # --- Episode memory --------------------------------------------------------------------
 
 
@@ -473,8 +524,12 @@ class OpportunityEstimate:
 class EpisodeMemory:
     """Bounded in-memory state for one player within one episode.
 
-    ``opponent_history`` is a bounded deque of summaries; the summary type is
-    defined by the opponent-model milestone and nothing is recorded before then.
+    ``opponent_history`` is a bounded deque of ``OpponentHarvestEvent`` (visible
+    opponent yield that disappeared through harvest, newest last). The opponent
+    model (Milestone 6) also keeps the previous turn's visible yield per
+    opponent tile (bounded by the board), this turn's pipeline forecast, and
+    ``inferred_opponent_pipeline``: confidence-weighted near-term units per
+    product, a diagnostic summary of that forecast.
     """
 
     player_id: int
@@ -482,6 +537,14 @@ class EpisodeMemory:
     previous_market_inventory: dict[str, int] = field(default_factory=dict)
     opponent_history: deque = field(default_factory=lambda: deque(maxlen=OPPONENT_HISTORY_LIMIT))
     inferred_opponent_pipeline: dict[str, float] = field(default_factory=dict)
+    # Visible harvestable yield per opponent tile at ``opponent_step``:
+    # (x, y) -> (product, units, still-a-producer). Replaced every turn.
+    opponent_visible_yield: dict[tuple[int, int], tuple[str, int, bool]] = field(
+        default_factory=dict
+    )
+    opponent_step: int = -1
+    # This turn's pipeline forecast by product (estimates in stable order).
+    opponent_forecast: dict[str, tuple[OpponentPipelineEstimate, ...]] = field(default_factory=dict)
     current_plan: StrategicPlan | None = None
     plan_created_step: int | None = None
     # Movement-to-task persistence: the job each of our units (by current

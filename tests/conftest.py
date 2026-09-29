@@ -123,10 +123,13 @@ def make_state(
     hand_inventories=None,
     inventory_market=None,
     shops=None,
+    opp_tiles=None,
+    step=None,
 ):
     """Copy a real observation, apply overrides to our own farm, and parse it.
 
-    ``tiles`` maps ``(x, y)`` to a raw tile value (``None``, ``"LOCKED"`` or a dict).
+    ``tiles`` maps ``(x, y)`` to a raw tile value (``None``, ``"LOCKED"`` or a dict);
+    ``opp_tiles`` does the same on the opponent's public farm.
     ``hand_inventories`` maps a hand's position in ``hands`` (0-based) to its inventory.
     """
     from kaggriculture_bot.parser import parse_observation
@@ -144,8 +147,13 @@ def make_state(
     if hands is not None:
         me["hands"] = [list(h) for h in hands]
         obs["private"]["inventories"] = [obs["private"]["inventories"][0]] + [{} for _ in hands]
+    if step is not None:
+        obs["step"] = step
     for (x, y), tile in (tiles or {}).items():
         me["tiles"][y][x] = tile
+    opp = obs["farms"][1 - obs["player"]]
+    for (x, y), tile in (opp_tiles or {}).items():
+        opp["tiles"][y][x] = tile
     if seeds is not None:
         obs["private"]["seeds"].update(seeds)
     if shed is not None:

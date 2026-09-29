@@ -607,6 +607,30 @@ Examples:
 
 Never chase the opponent so aggressively that we abandon positive expected value.
 
+### Milestone 6 opponent-model parameters (candidate; pending promotion)
+
+The opponent model (`opponent.py`) forecasts opponent output that may reach the shared market from the **public opponent farm only**; `economy.opponent_supply` turns the forecast into confidence-weighted market pressure inside the Milestone 5 market projection. It is a forecast, not reconstruction: opponent carried inventories are `None` (unknown, never empty), and opponent shed and seeds are absent from the observation, so harvested opponent units are never treated as a known inventory. Parameters are **initial, benchmark-tunable strategy choices, not game rules**; values live once in `constants.py`. Mechanics used (crop/animal timing, yield caps, HARVEST semantics, tile visibility) come from `TILLA_RULES.md` §2, §7-§14 and are conformance-tested.
+
+Observable signals used: each opponent plant's crop, planting day, watering state and on-tile yield; each opponent animal's type, placement day, feeding state and on-tile product; tile transitions between consecutive observed turns (harvest detection); public market inventory changes (to retire harvested units already sold). Not used: opponent unit inventories, opponent shed/seeds, opponent money flows, intended actions, opponent identity across episodes.
+
+| Parameter / rule | Value | Controls | Why it exists |
+|---|---:|---|---|
+| Pipeline estimate | `OpponentPipelineEstimate(product, source, units, earliest/likely/latest step, confidence, position, reason)` | One visible source of future opponent supply | Explainable, typed, never a fact |
+| Sources | ready crop yield; growing crop (one-time: expected yield at its cap/max-yield age with daily water; ongoing: each remaining scheduled production); animal product on tile; each scheduled animal production to the season end; recently harvested units | What is forecast | Everything the public farm shows that can become market supply |
+| Confidence | HIGH: harvestable now; MEDIUM: visibly maintained production still growing, or harvested units whose sale is unseen; LOW: unwatered/unfed at risk (one level down), decaying or capped (visibly neglected), wheat harvests (may feed animals), or production more than `OPPONENT_FORECAST_DAYS = 12` days ahead | Weight of the evidence | Timing is not certainty: when output arrives is the window, confidence is whether it materializes |
+| `OPPONENT_CONFIDENCE_WEIGHTS` | HIGH 0.8, MEDIUM 0.5, LOW 0.2 | Units counted per estimate | Even harvestable output may be held, fed or sold late; weak evidence moves scores mildly (TILLA_ARCHITECTURE.md §13) |
+| Realization window | uniform over `OPPONENT_REALIZATION_WINDOW_TURNS = 24` turns from the moment output is available | Share counted before our sale turn (linear CDF: 0 before, 1 after) | One day of harvest and delivery; no route or action prediction |
+| Recent harvests | visible yield that left a tile through HARVEST (one-time tile emptied; ongoing/animal yield to 0; weeds, escapes and non-consecutive turns excluded), kept `OPPONENT_RECENT_HARVEST_TURNS = 24` turns, minus the positive residual market inflow observed since (oldest harvest first) | Harvested units not yet seen sold | A realized sale is never counted again; where the units are stays unknown |
+| Pressure | `opponent_supply = Σ units × weight × realization share × OPPONENT_INFLUENCE` | Opponent units in the projected market | Simple, bounded by the visible farm |
+| No double counting | projected inventory adds `max(0, opponent_supply − max(0, trend inflow))` | Trend vs pipeline | The M5 aggregate trend and the pipeline are two views of one inflow: the larger counts, never both |
+| Premium caution | LOW-confidence estimates are ignored for STRAWBERRY/MELON/MILK/WOOL | Premium investment, glut protection and sell/hold | Premium decisions react to MEDIUM/HIGH evidence only: no destroyed pipelines or dumped stock on weak signals |
+| Scope of influence | projected inventory only: investment revenue/glut penalty, premium glut protection, sell/hold | Where the model acts | Economic layer only; survival, care, feeding, same-day watering and liquidation (from day 27 nothing is held) are unchanged |
+| `OPPONENT_INFLUENCE` | 1.0 (0.0 = offline ablation, identical to Milestone 5) | Whole-model switch | Isolates the model's contribution in benchmarks; never configured at runtime |
+
+Limitations: new opponent plantings are unseen until they happen; harvest vs DIG of a harvestable one-time crop is indistinguishable (counted as harvest); positive market inflow from our own sales can retire harvested opponent units early (conservative: less pressure); no model of opponent sell timing beyond the window.
+
+No adversarial behaviour: the model never blocks, chases or denies the opponent; it only changes what our own economics expect the market to hold.
+
 ---
 
 ## 16. Task execution policy
@@ -726,7 +750,7 @@ SHED_PRESSURE_START = 85
 SHED_EMERGENCY = 95
 ```
 
-Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters". Milestone 5 market and town parameters are documented in §13 "Initial Milestone 5 market and town parameters".
+Milestone 3 economic parameters (labor, land, risk, byproduct realization, reserve components, harvest thresholds, execution cutoffs) are documented in §7 "Initial Milestone 3 economic parameters". Milestone 4 hiring and multi-unit parameters are documented in §12 "Initial Milestone 4 hiring and multi-unit parameters". Milestone 5 market and town parameters are documented in §13 "Initial Milestone 5 market and town parameters". Milestone 6 opponent-model parameters (candidate, pending promotion) are documented in §15 "Milestone 6 opponent-model parameters".
 
 Do not scatter these values through strategy code. Define them once in `constants.py` and document changes here with benchmark evidence.
 

@@ -57,6 +57,8 @@ Private state includes only our:
 
 Do not build logic that assumes access to them.
 
+The public farm exposes every tile field of both players: a plant's `crop`, `planted_day`, `watered_today`, `consecutive_unwatered`, `yield_units`, `max_lifespan_step` and `fertilized_until_day`; an occupied coop/pasture's `animal`, `placed_day`, `yield_units`, `consecutive_unfed`, `fed_today`, `cared_today`, `fertilizer_available` and `pending_care_bonus`. The other seat's `private` block contains only its own `shed`, `seeds` and `inventories`. Verified against installed `kaggle-environments==1.30.2` and by `tests/test_rules_conformance.py` (`test_opponent_farm_is_public_and_harvest_zeroes_animal_yield_in_place`).
+
 ---
 
 ## 3. Farm and land
@@ -226,6 +228,8 @@ DIG
 ```
 
 PLANT validation is atomic per crop and turn: if a player's units request more `PLANT <crop>` actions in one turn than seeds of that crop are held, **every** `PLANT <crop>` request of that turn becomes a no-op (the seeds stay). Verified against installed `kaggle-environments==1.30.2` (`interpreter`, "Atomic PLANT validation") and by `tests/test_rules_conformance.py`.
+
+`HARVEST` takes **all** `yield_units` into the acting unit's carried inventory and is a no-op on a tile with no yield or, for plants, before `first_yield_day`. A harvested one-time crop's tile becomes empty (`None`); an ongoing crop or an animal stays on its tile with `yield_units = 0`. Verified against installed `kaggle-environments==1.30.2` (`_apply_unit_action`) and by `tests/test_rules_conformance.py`.
 
 `DIG` removes:
 

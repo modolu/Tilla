@@ -19,11 +19,18 @@ from kaggriculture_bot.constants import (
     SHED_CAPACITY,
     SHED_EMERGENCY,
     SHED_PRESSURE_START,
+    SHOP_SELL_INTERVAL,
+    SHOPS,
+    TOWN_CENTER_DEMAND_SCHEDULE,
+    TOWN_CENTER_INTERVAL,
+    TOWN_CENTER_PRODUCTS,
     TURNS_PER_DAY,
+    CropSpec,
 )
 from kaggriculture_bot.models import (
     FarmState,
     GameState,
+    MarketSnapshot,
     PlantTile,
     Position,
     StructureTile,
@@ -152,6 +159,25 @@ def plant_age(day: int, plant: PlantTile) -> int:
     return day - plant.planted_day
 
 
+def bonus_window_start(spec: CropSpec) -> int:
+    """First age of a one-time crop's watering bonus window (TILLA_RULES.md §10)."""
+    return (spec.max_yield_day + 1) // 2
+
+
+def one_time_harvest_age(spec: CropSpec) -> int:
+    """Age at which a daily-watered, unfertilized one-time crop stops gaining
+    yield: its yield cap or its max-yield day, whichever comes first."""
+    return min(spec.max_yield_day, bonus_window_start(spec) + spec.max_yield - 2)
+
+
+def one_time_units_at_age(spec: CropSpec, age: int) -> int:
+    """Yield of a daily-watered, unfertilized one-time crop harvested at ``age``."""
+    if age < spec.first_yield_day:
+        return 0
+    bonus_days = max(0, min(age, spec.max_yield_day) - bonus_window_start(spec) + 1)
+    return min(spec.max_yield, 1 + bonus_days)
+
+
 def plant_at_risk(plant: PlantTile) -> bool:
     """Dies at tonight's refresh unless watered today (includes fresh plantings)."""
     return not plant.watered_today and plant.consecutive_unwatered >= 1
@@ -273,3 +299,42 @@ def overflow_risk(state: GameState) -> int:
     (the end-of-day auto-drop does exactly that)."""
     carried_units = sum(carried_total(unit) for unit in state.me.units)
     return max(0, carried_units - shed_free_capacity(state))
+
+
+# --- Town demand schedule and observed market flow (TILLA_RULES.md §19) -------------------
+
+
+def town_center_units(day: int) -> int:
+    """Units of every non-fertilizer product one town-center tick removes on ``day``."""
+    for first_day, units in TOWN_CENTER_DEMAND_SCHEDULE:
+        if day >= first_day:
+            return units
+    return 0
+
+
+def shop_units(shop: str, product: str) -> int:
+    """Units of ``product`` one tick of ``shop`` removes (2 for single-product shops)."""
+    products = SHOPS[shop]
+    if product not in products:
+        return 0
+    return 2 if len(products) == 1 else 1
+
+
+def market_residuals(snapshots: list[MarketSnapshot], product: str) -> list[tuple[int, int]]:
+    """Observed per-turn market inventory change of ``product`` with the
+    scheduled town consumption of that turn added back: ``(after_step,
+    residual)`` for each consecutive pair of snapshots. A positive residual is
+    units some player sold into the market that turn (net of purchases); it is
+    never attributed to a player here."""
+    residuals: list[tuple[int, int]] = []
+    for before, after in zip(snapshots, snapshots[1:], strict=False):
+        if after.step != before.step + 1:
+            continue  # gap in observations: no delta
+        delta = after.inventory.get(product, 0) - before.inventory.get(product, 0)
+        town = 0
+        if before.step % SHOP_SELL_INTERVAL == 0:
+            town += sum(shop_units(shop, product) for shop in before.unlocked_shops)
+        if before.step % TOWN_CENTER_INTERVAL == 0 and product in TOWN_CENTER_PRODUCTS:
+            town += town_center_units(before.day)
+        residuals.append((after.step, delta + town))
+    return residuals

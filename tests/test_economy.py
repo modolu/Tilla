@@ -575,3 +575,19 @@ def test_order_cost_prices_purchases_and_nothing_else(obs_no_hands):
     ) == 2 * economy.buy_price(state, "WHEAT")
     assert economy.order_cost(state, MarketOrder(MarketOp.SELL, "WHEAT", 2)) == 0
     assert economy.order_cost(state, MarketOrder(MarketOp.HIRE)) == 0
+
+
+def test_one_time_harvest_age_is_the_cap_or_max_yield_day_whichever_first():
+    """One shared helper (features.one_time_harvest_age) replaces the copies in
+    economy.plan_crop, economy.own_supply and opponent: cap age =
+    bonus-window start + max_yield - 2 (TILLA_RULES.md §10)."""
+    from kaggriculture_bot.features import one_time_harvest_age
+
+    expected = {"WHEAT": 4, "CARROT": 3, "MELON": 10}
+    for crop, age in expected.items():
+        spec = CROPS[crop]
+        assert one_time_harvest_age(spec) == age
+        assert economy.plan_crop(spec, 0).harvest_age == age  # plenty of season left
+    # Season-limited: day 25 leaves wheat 3 days before the last harvest day (28).
+    assert economy.plan_crop(CROPS["WHEAT"], 25).harvest_age == 3
+    assert not economy.plan_crop(CROPS["MELON"], 20).feasible  # first yield after day 28
