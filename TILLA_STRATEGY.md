@@ -805,3 +805,11 @@ Reason: Market-aware candidate replaces current-price economics that overproduce
 Benchmark: Paired seat-swapped gate vs frozen M4 incumbent (1b5b00f): stable seeds 10000–11499 (3000 episodes) + holdout 20000–20499 (1000 episodes); controlled single-process runtime probe (86,280 calls).
 Result: Promoted (commit 5c3f1ef). 3924/76/0, win 98.10%, Wilson lower 97.63%, median margin +7,426; 0 crashes/timeouts/invalid/malformed; runtime max 271.6 ms. Evidence: docs/milestones/M5_GATE_REPORT.md.
 ```
+
+```text
+2026-09-29 — S-003
+Change: Milestone 7 bounded final-day endgame policy on top of the accepted M6 (§17 "Milestone 7 final-day policy"): no feed-wheat purchase or FEED on day 29; ineffective final-day maintenance suppressed (no ongoing-crop watering; one-time-crop watering only when its bonus unit can still be harvested and sold); delivery-aware HARVEST/COLLECT deadlines; deadline-triggered DELIVER priority. M6 market/opponent behaviour, days 0–28 and land policy unchanged.
+Reason: M6 wasted day-29 feed and watering and stranded carried goods at the end of the season.
+Benchmark: Paired seat-swapped gate vs the accepted M6 (21195e7): stable seeds 60100–60399 (600 episodes) + untouched holdout 60500–60599 (200); diversity vs M5, M4, baseline (50 each); ENDGAME_POLICY off ablation (exact M6 mirror); controlled AC runtime probe (11,504 calls).
+Result: Promoted (commit 6ed9030). Combined 583/217/0, win 72.88%, Wilson lower 69.69%, median margin +539, median own-bank gain +549 vs switch-off M6; 0 crashes/timeouts/invalid/malformed/true care losses; runtime max 166.1 ms. Evidence: docs/milestones/M7_GATE_REPORT.md.
+```
