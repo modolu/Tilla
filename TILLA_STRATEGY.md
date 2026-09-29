@@ -755,3 +755,11 @@ Reason: Strong transparent baseline before considering learning/search systems.
 Benchmark: Pending implementation.
 Result: Initial strategy source of truth.
 ```
+
+```text
+2026-09-28 — S-002
+Change: Milestone 5 market and town model: quantity-aware market pricing, exact town demand, projected-inventory glut penalty, premium glut protection, marginal-tile seed sizing, sell/hold timing (parameters §13).
+Reason: Market-aware candidate replaces current-price economics that overproduced premium goods into gluts.
+Benchmark: Paired seat-swapped gate vs frozen M4 incumbent (1b5b00f): stable seeds 10000–11499 (3000 episodes) + holdout 20000–20499 (1000 episodes); controlled single-process runtime probe (86,280 calls).
+Result: Promoted (commit 5c3f1ef). 3924/76/0, win 98.10%, Wilson lower 97.63%, median margin +7,426; 0 crashes/timeouts/invalid/malformed; runtime max 271.6 ms. Evidence: docs/milestones/M5_GATE_REPORT.md.
+```
